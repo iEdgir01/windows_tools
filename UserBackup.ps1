@@ -1,4 +1,4 @@
-# UserBackup.ps1 - Fast User Data Backup Script
+# UserBackup.ps1 - Advanced User Data Backup Script with Exact Resume Support
 # Execute remotely with: iwr -useb "your-url/UserBackup.ps1" | iex
 
 param(
@@ -7,14 +7,42 @@ param(
     [string]$BackupFolder
 )
 
+# --- Global Config ---
+$global:LogRoot = "C:\BackupLogs"
+if (-not (Test-Path $LogRoot)) { New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null }
+$global:SessionLog = Join-Path $LogRoot ("Backup-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".log")
 
 # Function to display header
 function Show-Header {
     Clear-Host
     Write-Host "=================================" -ForegroundColor Cyan
     Write-Host "   Windows User Backup Tool" -ForegroundColor Cyan
+    Write-Host "   Enhanced with Exact Resume" -ForegroundColor Cyan
     Write-Host "=================================" -ForegroundColor Cyan
     Write-Host ""
+}
+
+# --- Utility Functions ---
+function Handle-Error {
+    param([string]$Message, [bool]$Critical = $false)
+    Write-Host "ERROR: $Message" -ForegroundColor Red
+    Add-Content $global:SessionLog "[$(Get-Date)] ERROR: $Message"
+    if ($Critical) {
+        Write-Host "This is a critical error that prevents the script from continuing." -ForegroundColor Red
+        Write-Host "Please check the error message above and try again." -ForegroundColor Yellow
+        Write-Host "`nPress any key to exit..."
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        exit 1
+    } else {
+        Write-Host "The script will attempt to continue..." -ForegroundColor Yellow
+    }
+}
+
+function Write-Log {
+    param([string]$Message)
+    $entry = "[$(Get-Date)] $Message"
+    Write-Host $Message -ForegroundColor Gray
+    Add-Content $global:SessionLog $entry
 }
 
 # Function to select user and return folder name
@@ -54,285 +82,111 @@ function Select-User {
 
             do {
                 $selection = Read-Host "`nSelect user number (1-$($wmiUsers.Count))"
-                $userIndex = [int]$selection - 1
-            } while ($userIndex -lt 0 -or $userIndex -ge $wmiUsers.Count)
+                $selection = [int]$selection
+            } while ($selection -lt 1 -or $selection -gt $wmiUsers.Count)
 
-            # Return the folder name directly
-            return Split-Path $wmiUsers[$userIndex].LocalPath -Leaf
+            $selectedProfile = $wmiUsers[$selection - 1]
+            return Split-Path $selectedProfile.LocalPath -Leaf
         }
     } catch {
-        # Fall back to directory method if WMI fails
+        Write-Host "WMI method failed, trying directory listing..." -ForegroundColor Yellow
     }
 
-    # Fallback to directory listing
-    $userFolders = Get-ChildItem "C:\Users" -Directory | Where-Object {
-        $_.Name -notin @("Public", "Default", "Default User", "All Users")
+    # Fallback: directory listing method
+    try {
+        $userFolders = Get-ChildItem "C:\Users" -Directory | Where-Object {
+            $_.Name -notmatch "(Public|Default|All Users)$"
+        }
+
+        if ($userFolders.Count -eq 0) {
+            throw "No user folders found"
+        }
+
+        $userNum = 1
+        foreach ($folder in $userFolders) {
+            Write-Host "  $userNum. $($folder.Name)"
+            $userNum++
+        }
+
+        do {
+            $selection = Read-Host "`nSelect user number (1-$($userFolders.Count))"
+            $selection = [int]$selection
+        } while ($selection -lt 1 -or $selection -gt $userFolders.Count)
+
+        return $userFolders[$selection - 1].Name
+    } catch {
+        throw "Failed to get user list: $($_.Exception.Message)"
     }
-
-    if ($userFolders.Count -eq 0) {
-        throw "No user profiles found in C:\Users directory!"
-    }
-
-    $userNum = 1
-    foreach ($folder in $userFolders) {
-        Write-Host "  $userNum. $($folder.Name)"
-        $userNum++
-    }
-
-    do {
-        $selection = Read-Host "`nSelect user number (1-$($userFolders.Count))"
-        $userIndex = [int]$selection - 1
-    } while ($userIndex -lt 0 -or $userIndex -ge $userFolders.Count)
-
-    return $userFolders[$userIndex].Name
 }
 
-# Function to detect existing backup folders on a device
+# Function to get existing backups on a device
 function Get-ExistingBackups {
     param([string]$DevicePath)
 
-    Write-Host "Scanning for existing backups on $DevicePath..." -ForegroundColor Yellow
-
     try {
-        $backupFolders = Get-ChildItem $DevicePath -Directory -ErrorAction SilentlyContinue | Where-Object {
-            # Check if folder contains typical backup structure
-            $subFolders = Get-ChildItem $_.FullName -Directory -ErrorAction SilentlyContinue
-            $hasBackupStructure = $subFolders.Name | Where-Object {
-                $_ -in @("Desktop", "Downloads", "Documents", "Pictures", "Videos", "Music", "OneDrive_Desktop", "OneDrive_Documents", "OneDrive_Pictures", "OneDrive_Videos", "OneDrive_Music")
-            }
-            return $hasBackupStructure.Count -gt 0
+        $backupFolders = Get-ChildItem $DevicePath -Directory | Where-Object {
+            $_.Name -match ".*[Bb]ackup.*" -or
+            $_.Name -match "\d{8}-\d{6}" -or
+            (Test-Path (Join-Path $_.FullName "backup_log.txt"))
         }
-
         return $backupFolders
     } catch {
-        Write-Warning "Could not scan device $DevicePath for backups: $($_.Exception.Message)"
         return @()
     }
 }
 
-# Function to parse robocopy log for completed operations
-function Get-LogBasedProgress {
-    param(
-        [string]$LogPath
-    )
+# Function to parse robocopy log for copied files by folder
+function Get-CopiedFilesByFolder {
+    param([string]$LogPath)
 
-    $completedFolders = @()
-    $failedFolders = @()
-    $currentOperation = $null
+    $copiedFiles = @{}
 
     if (-not (Test-Path $LogPath)) {
-        return @{
-            CompletedFolders = @()
-            FailedFolders = @()
-            LastOperation = $null
-            HasLog = $false
-        }
+        return $copiedFiles
     }
 
     try {
-        Write-Host "Parsing backup log for resume information..." -ForegroundColor Gray
+        Write-Log "Parsing backup log for exact file resume..."
         $logContent = Get-Content $LogPath -ErrorAction Stop
+        $currentFolder = ""
 
         foreach ($line in $logContent) {
-            # Look for robocopy source paths to identify current operation
+            # Track current source folder
             if ($line -match "^\s*Source\s*:\s*(.+)$") {
                 $sourcePath = $matches[1].Trim()
-                # Extract folder name from source path (Desktop, Documents, etc.)
                 if ($sourcePath -match "\\([^\\]+)$") {
-                    $currentOperation = $matches[1]
-                }
-            }
-            # Look for successful completion indicators
-            elseif ($line -match "^\s*Total\s+Copied\s+Skipped\s+Mismatch\s+FAILED\s+Extras") {
-                # This is the header before summary stats
-                continue
-            }
-            elseif ($line -match "^\s*Dirs\s*:\s*\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+\d+") {
-                # Directory summary line - check for failures
-                $failures = [int]$matches[1]
-                if ($currentOperation) {
-                    if ($failures -eq 0) {
-                        $completedFolders += $currentOperation
-                    } else {
-                        $failedFolders += $currentOperation
+                    $currentFolder = $matches[1]
+                    if (-not $copiedFiles.ContainsKey($currentFolder)) {
+                        $copiedFiles[$currentFolder] = @()
                     }
                 }
             }
-            elseif ($line -match "^\s*Files\s*:\s*\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+\d+") {
-                # File summary line - additional check for failures
-                $failures = [int]$matches[1]
-                if ($currentOperation -and $failures -gt 0) {
-                    if ($currentOperation -notin $failedFolders) {
-                        $failedFolders += $currentOperation
+            # Look for successfully copied files
+            elseif ($line -match "\s+(New File|same|older|newer|modified)\s+\d+\s+(.+)$") {
+                $filePath = $matches[2].Trim()
+                if ($currentFolder -and $filePath) {
+                    # Extract just the filename relative to the folder
+                    $fileName = Split-Path $filePath -Leaf
+                    if ($fileName -and $fileName -notin $copiedFiles[$currentFolder]) {
+                        $copiedFiles[$currentFolder] += $fileName
                     }
-                }
-            }
-            # Look for error patterns
-            elseif ($line -match "ERROR|FAILED|Access is denied|The system cannot find the path") {
-                if ($currentOperation -and $currentOperation -notin $failedFolders) {
-                    $failedFolders += $currentOperation
                 }
             }
         }
 
-        return @{
-            CompletedFolders = $completedFolders | Sort-Object | Get-Unique
-            FailedFolders = $failedFolders | Sort-Object | Get-Unique
-            HasLog = $true
+        foreach ($folder in $copiedFiles.Keys) {
+            Write-Log "Found $($copiedFiles[$folder].Count) copied files in $folder"
         }
+
+        return $copiedFiles
     }
     catch {
         Write-Host "Warning: Could not parse log file: $($_.Exception.Message)" -ForegroundColor Yellow
-        return @{
-            CompletedFolders = @()
-            FailedFolders = @()
-            HasLog = $false
-        }
+        return @{}
     }
 }
 
-# Function to analyze what's missing from an existing backup
-function Compare-BackupProgress {
-    param(
-        [string]$UserPath,
-        [string]$BackupPath
-    )
-
-    Write-Host "Analyzing backup progress..." -ForegroundColor Yellow
-
-    # First check for existing log file for more accurate progress
-    $logPath = Join-Path $BackupPath "backup_log.txt"
-    $logProgress = Get-LogBasedProgress -LogPath $logPath
-
-    if ($logProgress.HasLog) {
-        Write-Host "Found backup log - using for accurate progress analysis" -ForegroundColor Green
-    }
-
-    $folders = @("Desktop", "Downloads", "Documents", "Pictures", "Videos", "Music")
-    $oneDriveFolders = @(
-        @{Source = "$UserPath\OneDrive\Desktop"; Dest = "OneDrive_Desktop"},
-        @{Source = "$UserPath\OneDrive\Documents"; Dest = "OneDrive_Documents"},
-        @{Source = "$UserPath\OneDrive\Pictures"; Dest = "OneDrive_Pictures"},
-        @{Source = "$UserPath\OneDrive\Videos"; Dest = "OneDrive_Videos"},
-        @{Source = "$UserPath\OneDrive\Music"; Dest = "OneDrive_Music"}
-    )
-
-    $missing = @()
-    $incomplete = @()
-    $complete = @()
-
-    # Check standard folders
-    foreach ($folder in $folders) {
-        $sourcePath = Join-Path $UserPath $folder
-        $destPath = Join-Path $BackupPath $folder
-
-        if (Test-Path $sourcePath) {
-            # Use log-based analysis if available
-            if ($logProgress.HasLog) {
-                if ($folder -in $logProgress.CompletedFolders) {
-                    # Folder completed successfully according to log
-                    $destCount = if (Test-Path $destPath) { (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count } else { 0 }
-                    $complete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; Files = $destCount}
-                }
-                elseif ($folder -in $logProgress.FailedFolders) {
-                    # Folder failed according to log
-                    $sourceCount = (Get-ChildItem $sourcePath -Recurse -File -ErrorAction SilentlyContinue).Count
-                    $destCount = if (Test-Path $destPath) { (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count } else { 0 }
-                    $incomplete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
-                }
-                elseif (-not (Test-Path $destPath)) {
-                    # Not in log and no destination folder = missing
-                    $missing += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath}
-                }
-                else {
-                    # Exists but not in log = assume incomplete (interrupted)
-                    $sourceCount = (Get-ChildItem $sourcePath -Recurse -File -ErrorAction SilentlyContinue).Count
-                    $destCount = (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count
-                    $incomplete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
-                }
-            }
-            else {
-                # Fallback to file count comparison when no log available
-                if (-not (Test-Path $destPath)) {
-                    $missing += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath}
-                } else {
-                    try {
-                        $sourceCount = (Get-ChildItem $sourcePath -Recurse -File -ErrorAction SilentlyContinue).Count
-                        $destCount = (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count
-
-                        if ($sourceCount -gt $destCount) {
-                            $incomplete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
-                        } else {
-                            $complete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; Files = $destCount}
-                        }
-                    } catch {
-                        # If we can't compare, assume incomplete
-                        $incomplete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; SourceFiles = "Unknown"; BackupFiles = "Unknown"}
-                    }
-                }
-            }
-        }
-    }
-
-    # Check OneDrive folders
-    foreach ($oneFolder in $oneDriveFolders) {
-        if (Test-Path $oneFolder.Source) {
-            $destPath = Join-Path $BackupPath $oneFolder.Dest
-
-            # Use log-based analysis if available
-            if ($logProgress.HasLog) {
-                if ($oneFolder.Dest -in $logProgress.CompletedFolders) {
-                    # OneDrive folder completed successfully according to log
-                    $destCount = if (Test-Path $destPath) { (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count } else { 0 }
-                    $complete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; Files = $destCount}
-                }
-                elseif ($oneFolder.Dest -in $logProgress.FailedFolders) {
-                    # OneDrive folder failed according to log
-                    $sourceCount = (Get-ChildItem $oneFolder.Source -Recurse -File -ErrorAction SilentlyContinue).Count
-                    $destCount = if (Test-Path $destPath) { (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count } else { 0 }
-                    $incomplete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
-                }
-                elseif (-not (Test-Path $destPath)) {
-                    # Not in log and no destination folder = missing
-                    $missing += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath}
-                }
-                else {
-                    # Exists but not in log = assume incomplete (interrupted)
-                    $sourceCount = (Get-ChildItem $oneFolder.Source -Recurse -File -ErrorAction SilentlyContinue).Count
-                    $destCount = (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count
-                    $incomplete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
-                }
-            }
-            else {
-                # Fallback to file count comparison when no log available
-                if (-not (Test-Path $destPath)) {
-                    $missing += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath}
-                } else {
-                    try {
-                        $sourceCount = (Get-ChildItem $oneFolder.Source -Recurse -File -ErrorAction SilentlyContinue).Count
-                        $destCount = (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count
-
-                        if ($sourceCount -gt $destCount) {
-                            $incomplete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
-                        } else {
-                            $complete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; Files = $destCount}
-                        }
-                    } catch {
-                        $incomplete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; SourceFiles = "Unknown"; BackupFiles = "Unknown"}
-                    }
-                }
-            }
-        }
-    }
-
-    return @{
-        Missing = $missing
-        Incomplete = $incomplete
-        Complete = $complete
-    }
-}
-
-# Function to get available storage devices
+# Enhanced storage device detection with multiple fallback methods
 function Get-StorageDevices {
     $deviceList = @()
     Write-Host "Detecting storage devices..." -ForegroundColor Gray
@@ -399,8 +253,6 @@ function Get-StorageDevices {
 
         foreach ($drive in $psDrives) {
             $driveLetter = $drive.Name + ":"
-
-            # Try Get-Volume for size info (PowerShell 3+)
             $sizeGB = "Unknown"
             $freeGB = "Unknown"
             $label = "Drive $driveLetter"
@@ -413,7 +265,7 @@ function Get-StorageDevices {
                         $sizeGB = [math]::Round($volumeInfo.Size / 1GB, 2)
                         $freeGB = [math]::Round($volumeInfo.SizeRemaining / 1GB, 2)
                         $label = if ($volumeInfo.FileSystemLabel) { $volumeInfo.FileSystemLabel } else { "Unlabeled" }
-                        $type = "Fixed" # Default since we can't detect removable easily
+                        $type = "Fixed"
                     }
                 }
                 catch {
@@ -453,61 +305,162 @@ function Get-StorageDevices {
     return $deviceList
 }
 
+# Function to analyze backup progress with log-based detection
+function Compare-BackupProgress {
+    param(
+        [string]$UserPath,
+        [string]$BackupPath
+    )
+
+    Write-Host "Analyzing backup progress..." -ForegroundColor Yellow
+
+    # Check for existing log file for exact file tracking
+    $logPath = Join-Path $BackupPath "backup_log.txt"
+    $copiedFiles = Get-CopiedFilesByFolder -LogPath $logPath
+
+    if ($copiedFiles.Keys.Count -gt 0) {
+        Write-Host "Found backup log - using for exact file-level resume analysis" -ForegroundColor Green
+    }
+
+    $folders = @("Desktop", "Downloads", "Documents", "Pictures", "Videos", "Music")
+    $oneDriveFolders = @(
+        @{Source = "$UserPath\OneDrive\Desktop"; Dest = "OneDrive_Desktop"},
+        @{Source = "$UserPath\OneDrive\Documents"; Dest = "OneDrive_Documents"},
+        @{Source = "$UserPath\OneDrive\Pictures"; Dest = "OneDrive_Pictures"},
+        @{Source = "$UserPath\OneDrive\Videos"; Dest = "OneDrive_Videos"},
+        @{Source = "$UserPath\OneDrive\Music"; Dest = "OneDrive_Music"}
+    )
+
+    $missing = @()
+    $incomplete = @()
+    $complete = @()
+
+    # Check standard folders
+    foreach ($folder in $folders) {
+        $sourcePath = Join-Path $UserPath $folder
+        $destPath = Join-Path $BackupPath $folder
+
+        if (Test-Path $sourcePath) {
+            if (-not (Test-Path $destPath)) {
+                $missing += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath}
+            } else {
+                # Check if we have copied files info from log
+                if ($copiedFiles.ContainsKey($folder)) {
+                    $sourceFiles = (Get-ChildItem $sourcePath -Recurse -File -ErrorAction SilentlyContinue)
+                    $copiedCount = $copiedFiles[$folder].Count
+                    $totalCount = $sourceFiles.Count
+
+                    if ($copiedCount -ge $totalCount) {
+                        $complete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; Files = $copiedCount}
+                    } else {
+                        $incomplete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; SourceFiles = $totalCount; BackupFiles = $copiedCount}
+                    }
+                } else {
+                    # Fallback to file count comparison
+                    try {
+                        $sourceCount = (Get-ChildItem $sourcePath -Recurse -File -ErrorAction SilentlyContinue).Count
+                        $destCount = (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count
+
+                        if ($sourceCount -gt $destCount) {
+                            $incomplete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
+                        } else {
+                            $complete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; Files = $destCount}
+                        }
+                    } catch {
+                        $incomplete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; SourceFiles = "Unknown"; BackupFiles = "Unknown"}
+                    }
+                }
+            }
+        }
+    }
+
+    # Check OneDrive folders
+    foreach ($oneFolder in $oneDriveFolders) {
+        if (Test-Path $oneFolder.Source) {
+            $destPath = Join-Path $BackupPath $oneFolder.Dest
+
+            if (-not (Test-Path $destPath)) {
+                $missing += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath}
+            } else {
+                # Check if we have copied files info from log
+                if ($copiedFiles.ContainsKey($oneFolder.Dest)) {
+                    $sourceFiles = (Get-ChildItem $oneFolder.Source -Recurse -File -ErrorAction SilentlyContinue)
+                    $copiedCount = $copiedFiles[$oneFolder.Dest].Count
+                    $totalCount = $sourceFiles.Count
+
+                    if ($copiedCount -ge $totalCount) {
+                        $complete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; Files = $copiedCount}
+                    } else {
+                        $incomplete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; SourceFiles = $totalCount; BackupFiles = $copiedCount}
+                    }
+                } else {
+                    # Fallback to file count comparison
+                    try {
+                        $sourceCount = (Get-ChildItem $oneFolder.Source -Recurse -File -ErrorAction SilentlyContinue).Count
+                        $destCount = (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count
+
+                        if ($sourceCount -gt $destCount) {
+                            $incomplete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
+                        } else {
+                            $complete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; Files = $destCount}
+                        }
+                    } catch {
+                        $incomplete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; SourceFiles = "Unknown"; BackupFiles = "Unknown"}
+                    }
+                }
+            }
+        }
+    }
+
+    return @{
+        Missing = $missing
+        Incomplete = $incomplete
+        Complete = $complete
+        CopiedFiles = $copiedFiles
+    }
+}
+
 # Function to estimate copy time and size
 function Get-CopyEstimate {
     param([string]$SourcePath)
-
     Write-Host "Calculating backup size..." -ForegroundColor Yellow
-
     $totalSize = 0
     $fileCount = 0
 
     $folders = @("Desktop", "Downloads", "Documents", "Pictures", "Videos", "Music")
-
-    # Also check OneDrive folders that may contain the actual user data
-    $oneDriveFolders = @(
-        @{Source = "$SourcePath\OneDrive\Desktop"; Dest = "OneDrive_Desktop"},
-        @{Source = "$SourcePath\OneDrive\Documents"; Dest = "OneDrive_Documents"},
-        @{Source = "$SourcePath\OneDrive\Pictures"; Dest = "OneDrive_Pictures"},
-        @{Source = "$SourcePath\OneDrive\Videos"; Dest = "OneDrive_Videos"},
-        @{Source = "$SourcePath\OneDrive\Music"; Dest = "OneDrive_Music"}
-    )
+    $oneDriveFolders = @("OneDrive\Desktop", "OneDrive\Documents", "OneDrive\Pictures", "OneDrive\Videos", "OneDrive\Music")
 
     foreach ($folder in $folders) {
         $folderPath = Join-Path $SourcePath $folder
         if (Test-Path $folderPath) {
             try {
-                $folderInfo = Get-ChildItem $folderPath -Recurse -File -ErrorAction SilentlyContinue |
-                    Measure-Object -Property Length -Sum
-                $totalSize += $folderInfo.Sum
-                $fileCount += $folderInfo.Count
-            }
-            catch {
-                Write-Warning "Could not calculate size for $folder"
+                $files = Get-ChildItem $folderPath -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ne ".pst" }
+                $fileCount += $files.Count
+                $totalSize += ($files | Measure-Object -Property Length -Sum).Sum
+            } catch {
+                # Skip folders with access issues
             }
         }
     }
 
-    # Calculate size for OneDrive folders
-    foreach ($oneFolder in $oneDriveFolders) {
-        if (Test-Path $oneFolder.Source) {
+    foreach ($folder in $oneDriveFolders) {
+        $folderPath = Join-Path $SourcePath $folder
+        if (Test-Path $folderPath) {
             try {
-                $folderInfo = Get-ChildItem $oneFolder.Source -Recurse -File -ErrorAction SilentlyContinue |
-                    Measure-Object -Property Length -Sum
-                $totalSize += $folderInfo.Sum
-                $fileCount += $folderInfo.Count
-            }
-            catch {
-                Write-Warning "Could not calculate size for $($oneFolder.Dest)"
+                $files = Get-ChildItem $folderPath -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ne ".pst" }
+                $fileCount += $files.Count
+                $totalSize += ($files | Measure-Object -Property Length -Sum).Sum
+            } catch {
+                # Skip folders with access issues
             }
         }
     }
 
     $sizeGB = [math]::Round($totalSize / 1GB, 2)
 
-    # Estimate time based on USB 3.0 speed (~100 MB/s) and USB 2.0 speed (~25 MB/s)
-    $estimatedTimeUSB3 = [math]::Round(($totalSize / 1MB) / 100 / 60, 1)
-    $estimatedTimeUSB2 = [math]::Round(($totalSize / 1MB) / 25 / 60, 1)
+    # Estimate transfer times (rough calculations)
+    $estimatedTimeUSB3 = [math]::Round($sizeGB / 0.5, 0)  # ~30MB/s for USB 3.0
+    $estimatedTimeUSB2 = [math]::Round($sizeGB / 0.08, 0) # ~5MB/s for USB 2.0
 
     return [PSCustomObject]@{
         SizeGB = $sizeGB
@@ -517,7 +470,7 @@ function Get-CopyEstimate {
     }
 }
 
-# Function to perform the backup
+# Enhanced backup execution with exact file resume
 function Start-UserBackup {
     param(
         [string]$UserPath,
@@ -528,8 +481,6 @@ function Start-UserBackup {
 
     $folders = @("Desktop", "Downloads", "Documents", "Pictures", "Videos", "Music")
     $logFile = Join-Path $DestinationPath "backup_log.txt"
-
-    # OneDrive folders that may contain the actual user data
     $oneDriveFolders = @(
         @{Source = "$UserPath\OneDrive\Desktop"; Dest = "OneDrive_Desktop"},
         @{Source = "$UserPath\OneDrive\Documents"; Dest = "OneDrive_Documents"},
@@ -567,26 +518,39 @@ function Start-UserBackup {
         if (Test-Path $sourcePath) {
             Write-Host "[$currentFolder/$totalFolders] Copying $folder..." -ForegroundColor Cyan
 
-            # Robocopy with complete mirroring and full file copy
+            # Build exclude list for exact file resume
+            $excludeFiles = @()
+            if ($BackupAnalysis -and $BackupAnalysis.CopiedFiles.ContainsKey($folder)) {
+                $excludeFiles = $BackupAnalysis.CopiedFiles[$folder]
+                Write-Host "  Excluding $($excludeFiles.Count) already copied files" -ForegroundColor Gray
+            }
+
+            # Build robocopy arguments
             $robocopyArgs = @(
                 "`"$sourcePath`"",
                 "`"$destPath`"",
-                "/MIR",        # Mirror directory (copies everything, creates dirs, deletes extras)
-                "/COPY:DAT",    # Copy all file info (ensures Excel, images, hidden files included)
-                "/DCOPY:DAT",  # Copy directory Data, Attributes, and Timestamps
-                "/XF", "*.pst", # Exclude Outlook PST files
-                "/R:3",        # Retry 3 times on failed copies
+                "/MIR",        # Mirror directory
+                "/COPY:DAT",   # Copy data, attributes, and timestamps
+                "/DCOPY:DAT",  # Copy directory attributes and timestamps
+                "/XF", "*.pst", # Exclude PST files
+                "/R:3",        # Retry 3 times
                 "/W:10",       # Wait 10 seconds between retries
-                "/MT:16",      # Multi-threaded copying (16 threads for speed)
+                "/MT:16",      # Multi-threaded copying
                 "/LOG+:`"$logFile`"",  # Append to log file
                 "/TEE",        # Output to console and log
-                "/NP"          # No progress percentage (reduces overhead)
+                "/NP"          # No progress percentage
             )
+
+            # Add exclude files for exact resume
+            foreach ($excludeFile in $excludeFiles) {
+                $robocopyArgs += "/XF"
+                $robocopyArgs += "`"$excludeFile`""
+            }
 
             # Start robocopy process
             $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -NoNewWindow -PassThru -Wait
 
-            # Check exit codes (0-3 are success, 4+ indicate issues)
+            # Handle robocopy exit codes
             if ($process.ExitCode -le 3) {
                 Write-Host "  ✓ $folder completed successfully" -ForegroundColor Green
             } elseif ($process.ExitCode -le 7) {
@@ -602,7 +566,7 @@ function Start-UserBackup {
     # Backup OneDrive folders
     Write-Host "`nBacking up OneDrive folders..." -ForegroundColor Yellow
 
-    # Determine which OneDrive folders to process (resume mode or full backup)
+    # Determine which OneDrive folders to process
     $oneDriveFoldersToProcess = $oneDriveFolders
     if ($BackupAnalysis) {
         $oneDriveFoldersToProcess = @()
@@ -621,29 +585,41 @@ function Start-UserBackup {
         $currentOneDrive++
         if (Test-Path $oneFolder.Source) {
             Write-Host "[$currentOneDrive/$totalOneDrive] Copying $($oneFolder.Dest)..." -ForegroundColor Cyan
-
             $destPath = Join-Path $DestinationPath $oneFolder.Dest
 
-            # Robocopy with complete mirroring and full file copy
+            # Build exclude list for exact file resume
+            $excludeFiles = @()
+            if ($BackupAnalysis -and $BackupAnalysis.CopiedFiles.ContainsKey($oneFolder.Dest)) {
+                $excludeFiles = $BackupAnalysis.CopiedFiles[$oneFolder.Dest]
+                Write-Host "  Excluding $($excludeFiles.Count) already copied files" -ForegroundColor Gray
+            }
+
+            # Build robocopy arguments
             $robocopyArgs = @(
                 "`"$($oneFolder.Source)`"",
                 "`"$destPath`"",
-                "/MIR",        # Mirror directory (copies everything, creates dirs, deletes extras)
-                "/COPY:DAT",   # Copy all file info (ensures Excel, images, hidden files included)
-                "/DCOPY:DAT",  # Copy directory Data, Attributes, and Timestamps
-                "/XF", "*.pst", # Exclude Outlook PST files
-                "/R:3",        # Retry 3 times on failed copies
+                "/MIR",        # Mirror directory
+                "/COPY:DAT",   # Copy data, attributes, and timestamps
+                "/DCOPY:DAT",  # Copy directory attributes and timestamps
+                "/XF", "*.pst", # Exclude PST files
+                "/R:3",        # Retry 3 times
                 "/W:10",       # Wait 10 seconds between retries
-                "/MT:16",      # Multi-threaded copying (16 threads for speed)
+                "/MT:16",      # Multi-threaded copying
                 "/LOG+:`"$logFile`"",  # Append to log file
                 "/TEE",        # Output to console and log
-                "/NP"          # No progress percentage (reduces overhead)
+                "/NP"          # No progress percentage
             )
+
+            # Add exclude files for exact resume
+            foreach ($excludeFile in $excludeFiles) {
+                $robocopyArgs += "/XF"
+                $robocopyArgs += "`"$excludeFile`""
+            }
 
             # Start robocopy process
             $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -NoNewWindow -PassThru -Wait
 
-            # Check exit codes (0-3 are success, 4+ indicate issues)
+            # Handle robocopy exit codes
             if ($process.ExitCode -le 3) {
                 Write-Host "  ✓ $($oneFolder.Dest) completed successfully" -ForegroundColor Green
             } elseif ($process.ExitCode -le 7) {
@@ -654,23 +630,6 @@ function Start-UserBackup {
         } else {
             Write-Host "[$currentOneDrive/$totalOneDrive] Skipping $($oneFolder.Dest) (not found)" -ForegroundColor Gray
         }
-    }
-}
-
-# Function to handle errors and prevent window closure
-function Handle-Error {
-    param([string]$ErrorMessage, [bool]$Critical = $false)
-
-    Write-Host "`nERROR: $ErrorMessage" -ForegroundColor Red
-
-    if ($Critical) {
-        Write-Host "`nThis is a critical error that prevents the script from continuing." -ForegroundColor Red
-        Write-Host "Please check the error message above and try again." -ForegroundColor Yellow
-        Write-Host "`nPress any key to exit..."
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-        exit 1
-    } else {
-        Write-Host "The script will attempt to continue..." -ForegroundColor Yellow
     }
 }
 
@@ -701,7 +660,6 @@ try {
     Write-Host "`nBackup Options:" -ForegroundColor Yellow
     Write-Host "  1. New backup (start fresh)"
     Write-Host "  2. Continue previous backup (resume)"
-
     do {
         $backupChoice = Read-Host "`nSelect option (1-2)"
         $backupChoice = [int]$backupChoice
@@ -713,66 +671,59 @@ try {
     if (-not $BackupLocation) {
         try {
             $devices = Get-StorageDevices
-
             if ($devices.Count -eq 0) {
                 Handle-Error "No storage devices found!" -Critical $true
             }
+
+            Write-Host "`nAvailable storage devices:" -ForegroundColor Yellow
+            for ($i = 0; $i -lt $devices.Count; $i++) {
+                $device = $devices[$i]
+                Write-Host "  $($i + 1). $($device.Drive) [$($device.Label)] - $($device.Size) (Free: $($device.Free)) [$($device.Type)]" -ForegroundColor Green
+            }
+
+            do {
+                $deviceChoice = Read-Host "`nSelect device number (1-$($devices.Count))"
+                $deviceChoice = [int]$deviceChoice
+            } while ($deviceChoice -lt 1 -or $deviceChoice -gt $devices.Count)
+
+            $BackupLocation = $devices[$deviceChoice - 1].Drive
         } catch {
             Handle-Error "Failed to get storage devices: $($_.Exception.Message)" -Critical $true
         }
-
-    Write-Host "`nAvailable storage devices:" -ForegroundColor Yellow
-    Write-Host "Drive | Label        | Size      | Free      | Type" -ForegroundColor Gray
-    Write-Host "------|--------------|-----------|-----------|----------" -ForegroundColor Gray
-
-    for ($i = 0; $i -lt $devices.Count; $i++) {
-        $device = $devices[$i]
-        $num = ($i + 1).ToString().PadLeft(2)
-        $label = $device.Label.PadRight(12)
-        $size = $device.Size.PadRight(9)
-        $free = $device.Free.PadRight(9)
-        Write-Host "$num. $($device.Drive) | $label | $size | $free | $($device.Type)"
     }
 
-    do {
-        $selection = Read-Host "`nSelect storage device number (1-$($devices.Count))"
-        $deviceIndex = [int]$selection - 1
-    } while ($deviceIndex -lt 0 -or $deviceIndex -ge $devices.Count)
+    Write-Host "Selected device: $BackupLocation" -ForegroundColor Green
 
-        $BackupLocation = $devices[$deviceIndex].Drive
-    }
-
-    Write-Host "Selected backup location: $BackupLocation" -ForegroundColor Green
-
-    # Handle resume vs new backup logic
+    # Handle resume logic
+    $analysis = $null
     if ($isResume) {
-        # Look for existing backups
         $existingBackups = Get-ExistingBackups -DevicePath $BackupLocation
-
         if ($existingBackups.Count -eq 0) {
-            Write-Host "`nNo existing backups found on this device." -ForegroundColor Yellow
+            Write-Host "No existing backups found on $BackupLocation" -ForegroundColor Yellow
             Write-Host "Starting new backup instead..." -ForegroundColor Yellow
             $isResume = $false
         } else {
             Write-Host "`nExisting backup folders found:" -ForegroundColor Yellow
             for ($i = 0; $i -lt $existingBackups.Count; $i++) {
                 $backup = $existingBackups[$i]
-                $backupDate = $backup.LastWriteTime.ToString("yyyy-MM-dd HH:mm")
-                Write-Host "  $($i + 1). $($backup.Name) - $backupDate"
+                Write-Host "  $($i + 1). $($backup.Name) (Modified: $($backup.LastWriteTime))" -ForegroundColor Green
             }
 
             do {
-                $selection = Read-Host "`nSelect backup to resume (1-$($existingBackups.Count))"
-                $backupIndex = [int]$selection - 1
-            } while ($backupIndex -lt 0 -or $backupIndex -ge $existingBackups.Count)
+                $backupChoice = Read-Host "`nSelect backup to continue (1-$($existingBackups.Count))"
+                $backupChoice = [int]$backupChoice
+            } while ($backupChoice -lt 1 -or $backupChoice -gt $existingBackups.Count)
 
-            $BackupFolder = $existingBackups[$backupIndex].Name
-            $fullBackupPath = $existingBackups[$backupIndex].FullName
+            $selectedBackup = $existingBackups[$backupChoice - 1]
+            $BackupFolder = $selectedBackup.Name
+            $fullBackupPath = $selectedBackup.FullName
 
-            # Analyze what's missing
+            Write-Host "Resuming backup: $($selectedBackup.Name)" -ForegroundColor Green
+
+            # Analyze what's already been backed up
             $analysis = Compare-BackupProgress -UserPath $userProfilePath -BackupPath $fullBackupPath
 
-            Write-Host "`nBackup Analysis for: $BackupFolder" -ForegroundColor Cyan
+            Write-Host "`nBackup Progress Analysis:" -ForegroundColor Cyan
             Write-Host "  Complete folders: $($analysis.Complete.Count)" -ForegroundColor Green
             Write-Host "  Incomplete folders: $($analysis.Incomplete.Count)" -ForegroundColor Yellow
             Write-Host "  Missing folders: $($analysis.Missing.Count)" -ForegroundColor Red
@@ -803,9 +754,10 @@ try {
 
             if ($analysis.Missing.Count -eq 0 -and $analysis.Incomplete.Count -eq 0) {
                 Write-Host "`nBackup appears to be complete!" -ForegroundColor Green
-                $confirm = Read-Host "`nForce re-backup anyway? (y/N)"
-                if ($confirm -ne 'y' -and $confirm -ne 'Y') {
-                    Write-Host "Backup cancelled - already complete." -ForegroundColor Yellow
+                Write-Host "Would you like to verify/refresh the backup anyway? (y/N): " -NoNewline
+                $verify = Read-Host
+                if ($verify -ne 'y' -and $verify -ne 'Y') {
+                    Write-Host "Backup verification skipped." -ForegroundColor Yellow
                     Write-Host "`nPress any key to exit..."
                     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
                     exit 0
@@ -814,29 +766,24 @@ try {
         }
     }
 
-    if (-not $isResume) {
-        # Get backup folder if not provided
+    # Get backup folder name if not provided
+    if (-not $BackupFolder) {
+        $BackupFolder = Read-Host "`nEnter backup folder name (or press Enter for default)"
         if (-not $BackupFolder) {
-            $BackupFolder = Read-Host "`nEnter backup folder name (will be created in $BackupLocation)"
+            $BackupFolder = "$Username-Backup-" + (Get-Date -Format "yyyyMMdd-HHmmss")
         }
-
-        $fullBackupPath = Join-Path $BackupLocation $BackupFolder
     }
 
-    Write-Host "Full backup path: $fullBackupPath" -ForegroundColor Green
-
-    # Create backup directory if it doesn't exist
+    $fullBackupPath = Join-Path $BackupLocation $BackupFolder
     if (-not (Test-Path $fullBackupPath)) {
         try {
             New-Item -ItemType Directory -Path $fullBackupPath -Force | Out-Null
-            Write-Host "Created backup directory: $fullBackupPath" -ForegroundColor Green
-        }
-        catch {
+        } catch {
             Handle-Error "Failed to create backup directory: $($_.Exception.Message)" -Critical $true
         }
     }
 
-    # Get copy estimate
+    # Calculate backup size estimate
     try {
         $estimate = Get-CopyEstimate -SourcePath $userProfilePath
     } catch {
@@ -890,6 +837,7 @@ try {
         Write-Host "  Duration: $($duration.Hours)h $($duration.Minutes)m $($duration.Seconds)s"
         Write-Host "  Location: $fullBackupPath"
         Write-Host "  Log file: $(Join-Path $fullBackupPath 'backup_log.txt')"
+        Write-Host "  Session log: $global:SessionLog"
         Write-Host "=================================" -ForegroundColor Green
     } catch {
         Handle-Error "Backup operation failed: $($_.Exception.Message)" -Critical $false
