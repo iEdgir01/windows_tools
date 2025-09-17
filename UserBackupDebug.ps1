@@ -302,23 +302,12 @@ if (-not $Username) {
     for ($i = 0; $i -lt $users.Count; $i++) {
         $userNum = $i + 1
 
-        # Try the most reliable method found above
-        $userName = [string]$users[$i]
-        Write-Debug "Final display attempt - user[$i]: '$userName' as number $userNum"
+        # Use char array reconstruction to bypass string corruption
+        $userChars = $users[$i].ToCharArray()
+        $userName = -join $userChars
+        Write-Debug "Final display attempt using char array - user[$i]: '$userName' as number $userNum"
 
-        # Try different display methods
-        Write-Debug "Display test 1: Write-Host direct"
         Write-Host "  $userNum. $userName"
-
-        Write-Debug "Display test 2: Write-Host with -f"
-        Write-Host ("  {0}. {1}" -f $userNum, $userName)
-
-        Write-Debug "Display test 3: Write-Host separate variables"
-        $displayText = "  $userNum. $userName"
-        Write-Host $displayText
-
-        Write-Debug "Display test 4: Write-Output"
-        Write-Output "  $userNum. $userName"
     }
 
     do {

@@ -204,7 +204,9 @@ if (-not $Username) {
     Write-Host "Available users:" -ForegroundColor Yellow
     for ($i = 0; $i -lt $users.Count; $i++) {
         $userNum = $i + 1
-        $userName = $users[$i].ToString()
+        # Use char array reconstruction to bypass string corruption
+        $userChars = $users[$i].ToCharArray()
+        $userName = -join $userChars
         Write-Host "  $userNum. $userName"
     }
 
