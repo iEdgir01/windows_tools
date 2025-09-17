@@ -294,10 +294,14 @@ function Start-UserRestore {
                 "/NP"          # No progress percentage (reduces overhead)
             )
 
-            # Add merge flag if merging multiple backups
+            # Configure merge behavior for file conflicts
             if ($IsMerge -and $currentBackup -gt 1) {
-                # For merge operations after the first backup, don't delete extra files
-                $robocopyArgs = $robocopyArgs | Where-Object { $_ -ne "/MIR" }
+                # For subsequent backups in merge: overwrite existing files with newer content
+                # /IS = Include Same files (copy even if same)
+                # /IT = Include Tweaked files (copy files with different time/size)
+                $robocopyArgs += "/IS"
+                $robocopyArgs += "/IT"
+                Write-Host "    (Merge mode: files from this backup will overwrite existing files)" -ForegroundColor Gray
             }
 
             # Start robocopy process

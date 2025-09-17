@@ -115,7 +115,9 @@ You can skip prompts by providing parameters:
 - `/E` - Copy subdirectories including empty ones
 - `/COPY:DAT` - Copy data, attributes, and timestamps
 - `/MT:8` - Multi-threaded copying (8 threads for restore)
-- Smart merge handling for multiple backup sources
+- `/IS` - Include Same files (used in merge operations for consistency)
+- `/IT` - Include Tweaked files (used in merge operations for overwrites)
+- Smart merge handling with explicit conflict resolution
 
 ## Restore Workflow
 
@@ -134,10 +136,19 @@ The restore script provides flexible options for data recovery:
 
 ### Merge Functionality
 
-When merging multiple backups:
-- Files from later backups overwrite files from earlier backups if they have the same name
-- All unique files from all selected backups are preserved
-- Perfect for consolidating data from multiple users or time periods
+When merging multiple backups, the script processes them in the order selected:
+
+1. **First backup** - Copied normally to the target user
+2. **Subsequent backups** - Files are merged with the following behavior:
+   - **Same filename, different content** - Later backup overwrites earlier backup
+   - **Same filename, same content** - Later backup still copies (ensuring consistency)
+   - **Unique files** - All unique files from all backups are preserved
+   - **Directories** - All directories and subdirectories are merged
+
+**File Conflict Resolution**: Files from later-selected backups always win conflicts, making this perfect for:
+- Consolidating data from multiple users into one account
+- Merging backups from different time periods (most recent wins)
+- Combining partial backups from the same user
 
 ## Requirements
 
