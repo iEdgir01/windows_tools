@@ -204,31 +204,8 @@ if (-not $Username) {
     Write-Host "Available users:" -ForegroundColor Yellow
     for ($i = 0; $i -lt $users.Count; $i++) {
         $userNum = $i + 1
-        # Use multiple fallback methods to handle string display issues
-        $userName = $null
-        try {
-            # Method 1: Force string conversion through StringBuilder
-            $sb = New-Object System.Text.StringBuilder
-            $sb.Append($users[$i]) | Out-Null
-            $userName = $sb.ToString()
-        } catch {
-            try {
-                # Method 2: Force through format string
-                $userName = "{0}" -f $users[$i]
-            } catch {
-                try {
-                    # Method 3: Manual character extraction
-                    $temp = $users[$i]
-                    $userName = ""
-                    for ($j = 0; $j -lt $temp.Length; $j++) {
-                        $userName += $temp[$j]
-                    }
-                } catch {
-                    # Method 4: Last resort - use original
-                    $userName = $users[$i]
-                }
-            }
-        }
+        # Simple string handling that works on all systems
+        $userName = "$($users[$i])"
         Write-Host "  $userNum. $userName"
     }
 
