@@ -338,7 +338,7 @@ function Start-UserRestore {
                             Write-Host "    Conflict resolution options:" -ForegroundColor Cyan
                             Write-Host "      1. Skip conflicts (keep existing files)" -ForegroundColor White
                             Write-Host "      2. Overwrite all (replace with new files)" -ForegroundColor White
-                            Write-Host "      3. Overwrite if newer (based on date)" -ForegroundColor White
+                            Write-Host "      3. Keep newer files only (based on last modified date)" -ForegroundColor White
                             Write-Host "      4. Review each conflict individually" -ForegroundColor White
 
                             do {
@@ -370,25 +370,93 @@ function Start-UserRestore {
                             # Individual review
                             $overwriteList = @()
                             $skipList = @()
+                            $applyToAll = $null
 
                             foreach ($conflict in $conflictFiles) {
+                                # Skip if we have an "apply to all" decision
+                                if ($applyToAll) {
+                                    if ($applyToAll -eq "O") {
+                                        $overwriteList += $conflict.RelativePath
+                                    } elseif ($applyToAll -eq "S") {
+                                        $skipList += $conflict.RelativePath
+                                    } elseif ($applyToAll -eq "N") {
+                                        # Keep newer logic
+                                        if ($conflict.NewDate -gt $conflict.ExistingDate) {
+                                            $overwriteList += $conflict.RelativePath
+                                        } else {
+                                            $skipList += $conflict.RelativePath
+                                        }
+                                    }
+                                    continue
+                                }
+
                                 Write-Host ""
                                 Write-Host "    Conflict: $($conflict.RelativePath)" -ForegroundColor Yellow
-                                Write-Host "      Existing: $($conflict.ExistingSize) bytes, $($conflict.ExistingDate)" -ForegroundColor Gray
-                                Write-Host "      New:      $($conflict.NewSize) bytes, $($conflict.NewDate)" -ForegroundColor Gray
+
+                                # Enhanced date display with age comparison
+                                $existingAge = (Get-Date) - $conflict.ExistingDate
+                                $newAge = (Get-Date) - $conflict.NewDate
+
+                                Write-Host "      Existing: $($conflict.ExistingSize) bytes" -ForegroundColor Gray
+                                Write-Host "                Last modified: $($conflict.ExistingDate.ToString('yyyy-MM-dd HH:mm:ss')) ($($existingAge.Days) days ago)" -ForegroundColor Gray
+                                Write-Host "      New:      $($conflict.NewSize) bytes" -ForegroundColor Gray
+                                Write-Host "                Last modified: $($conflict.NewDate.ToString('yyyy-MM-dd HH:mm:ss')) ($($newAge.Days) days ago)" -ForegroundColor Gray
+
+                                # Show which is newer
+                                if ($conflict.NewDate -gt $conflict.ExistingDate) {
+                                    $timeDiff = $conflict.NewDate - $conflict.ExistingDate
+                                    Write-Host "      → New file is NEWER by $($timeDiff.Days) days, $($timeDiff.Hours) hours" -ForegroundColor Green
+                                } elseif ($conflict.ExistingDate -gt $conflict.NewDate) {
+                                    $timeDiff = $conflict.ExistingDate - $conflict.NewDate
+                                    Write-Host "      → Existing file is NEWER by $($timeDiff.Days) days, $($timeDiff.Hours) hours" -ForegroundColor Yellow
+                                } else {
+                                    Write-Host "      → Files have the same modification date" -ForegroundColor Cyan
+                                }
 
                                 do {
-                                    $fileChoice = Read-Host "      (O)verwrite, (S)kip, or (A)bort entire folder"
+                                    $fileChoice = Read-Host "      (O)verwrite, (S)kip, Keep (N)ewer, (A)bort folder, or apply to (A)ll remaining"
                                     $fileChoice = $fileChoice.ToUpper()
-                                } while ($fileChoice -notin @("O", "S", "A"))
+                                } while ($fileChoice -notin @("O", "S", "N", "A", "ALL"))
 
                                 if ($fileChoice -eq "A") {
                                     Write-Host "    Aborting $folderName restore" -ForegroundColor Red
                                     continue 2  # Continue to next folder
+                                } elseif ($fileChoice -eq "ALL") {
+                                    Write-Host "    Choose action to apply to ALL remaining conflicts:" -ForegroundColor Cyan
+                                    do {
+                                        $allChoice = Read-Host "      (O)verwrite all, (S)kip all, or Keep (N)ewer for all"
+                                        $allChoice = $allChoice.ToUpper()
+                                    } while ($allChoice -notin @("O", "S", "N"))
+
+                                    $applyToAll = $allChoice
+                                    Write-Host "    Applied '$allChoice' to current and all remaining conflicts" -ForegroundColor Green
+
+                                    # Apply to current file
+                                    if ($allChoice -eq "O") {
+                                        $overwriteList += $conflict.RelativePath
+                                    } elseif ($allChoice -eq "S") {
+                                        $skipList += $conflict.RelativePath
+                                    } elseif ($allChoice -eq "N") {
+                                        if ($conflict.NewDate -gt $conflict.ExistingDate) {
+                                            $overwriteList += $conflict.RelativePath
+                                            Write-Host "      → Overwriting (new file is newer)" -ForegroundColor Green
+                                        } else {
+                                            $skipList += $conflict.RelativePath
+                                            Write-Host "      → Skipping (existing file is newer)" -ForegroundColor Yellow
+                                        }
+                                    }
                                 } elseif ($fileChoice -eq "O") {
                                     $overwriteList += $conflict.RelativePath
-                                } else {
+                                } elseif ($fileChoice -eq "S") {
                                     $skipList += $conflict.RelativePath
+                                } elseif ($fileChoice -eq "N") {
+                                    if ($conflict.NewDate -gt $conflict.ExistingDate) {
+                                        $overwriteList += $conflict.RelativePath
+                                        Write-Host "      → Overwriting (new file is newer)" -ForegroundColor Green
+                                    } else {
+                                        $skipList += $conflict.RelativePath
+                                        Write-Host "      → Skipping (existing file is newer)" -ForegroundColor Yellow
+                                    }
                                 }
                             }
 

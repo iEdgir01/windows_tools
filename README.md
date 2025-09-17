@@ -156,15 +156,31 @@ When file conflicts are detected, you choose how to handle them:
 
 1. **Skip conflicts** - Keep existing files, don't overwrite anything
 2. **Overwrite all** - Replace all conflicting files with new versions
-3. **Overwrite if newer** - Only replace if the new file is more recent
-4. **Review individually** - Decide file-by-file with detailed comparison:
-   - Shows file sizes and dates for both versions
-   - Options: (O)verwrite, (S)kip, or (A)bort folder restore
+3. **Keep newer files only** - Smart date-based replacement (newer files win)
+4. **Review individually** - Decide file-by-file with enhanced details:
+   - **Enhanced date display**: Shows exact timestamps and file age
+   - **Clear newer indicator**: Highlights which file is more recent and by how much
+   - **Multiple options per file**: (O)verwrite, (S)kip, Keep (N)ewer, (A)bort, or apply to (A)ll
+   - **Apply to all remaining**: After reviewing one conflict, apply the same decision to all remaining conflicts
 
-**Benefits of User Control**:
+#### **Enhanced Conflict Display Example**
+```
+Conflict: Documents\ProjectPlan.docx
+  Existing: 2,450,123 bytes
+            Last modified: 2024-01-15 09:30:22 (25 days ago)
+  New:      2,551,890 bytes
+            Last modified: 2024-01-20 14:22:15 (20 days ago)
+  → New file is NEWER by 5 days, 4 hours
+
+(O)verwrite, (S)kip, Keep (N)ewer, (A)bort folder, or apply to (A)ll remaining?
+```
+
+**Benefits of Enhanced Resolution**:
 - **Safe merging** - No accidental overwrites of important files
-- **Informed decisions** - See file details before choosing
+- **Informed decisions** - See exact dates, file sizes, and age comparisons
 - **Flexible handling** - Different strategies per backup or folder
+- **Batch decisions** - Apply same choice to multiple conflicts
+- **Smart newer detection** - Automatically identifies which file is more recent
 - **Abort option** - Stop if conflicts are too complex to resolve
 
 ## Requirements
