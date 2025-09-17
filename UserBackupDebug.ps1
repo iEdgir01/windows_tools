@@ -158,6 +158,15 @@ function Get-CopyEstimate {
 
     $folders = @("Desktop", "Downloads", "Documents", "Pictures", "Videos", "Music")
 
+    # Also check OneDrive folders that may contain the actual user data
+    $oneDriveFolders = @(
+        @{Source = "$SourcePath\OneDrive\Desktop"; Dest = "OneDrive_Desktop"},
+        @{Source = "$SourcePath\OneDrive\Documents"; Dest = "OneDrive_Documents"},
+        @{Source = "$SourcePath\OneDrive\Pictures"; Dest = "OneDrive_Pictures"},
+        @{Source = "$SourcePath\OneDrive\Videos"; Dest = "OneDrive_Videos"},
+        @{Source = "$SourcePath\OneDrive\Music"; Dest = "OneDrive_Music"}
+    )
+
     foreach ($folder in $folders) {
         $folderPath = Join-Path $SourcePath $folder
         if (Test-Path $folderPath) {
@@ -169,6 +178,21 @@ function Get-CopyEstimate {
             }
             catch {
                 Write-Warning "Could not calculate size for $folder"
+            }
+        }
+    }
+
+    # Calculate size for OneDrive folders
+    foreach ($oneFolder in $oneDriveFolders) {
+        if (Test-Path $oneFolder.Source) {
+            try {
+                $folderInfo = Get-ChildItem $oneFolder.Source -Recurse -File -ErrorAction SilentlyContinue |
+                    Measure-Object -Property Length -Sum
+                $totalSize += $folderInfo.Sum
+                $fileCount += $folderInfo.Count
+            }
+            catch {
+                Write-Warning "Could not calculate size for $($oneFolder.Dest)"
             }
         }
     }
@@ -198,6 +222,15 @@ function Start-UserBackup {
     $folders = @("Desktop", "Downloads", "Documents", "Pictures", "Videos", "Music")
     $logFile = Join-Path $DestinationPath "backup_log.txt"
 
+    # OneDrive folders that may contain the actual user data
+    $oneDriveFolders = @(
+        @{Source = "$UserPath\OneDrive\Desktop"; Dest = "OneDrive_Desktop"},
+        @{Source = "$UserPath\OneDrive\Documents"; Dest = "OneDrive_Documents"},
+        @{Source = "$UserPath\OneDrive\Pictures"; Dest = "OneDrive_Pictures"},
+        @{Source = "$UserPath\OneDrive\Videos"; Dest = "OneDrive_Videos"},
+        @{Source = "$UserPath\OneDrive\Music"; Dest = "OneDrive_Music"}
+    )
+
     Write-Host "`nStarting backup for user: $UserName" -ForegroundColor Green
     Write-Host "Destination: $DestinationPath" -ForegroundColor Green
     Write-Host "Log file: $logFile" -ForegroundColor Gray
@@ -225,6 +258,7 @@ function Start-UserBackup {
                 "/MIR",        # Mirror directory (copies everything, creates dirs, deletes extras)
                 "/COPY:DAT",   # Copy Data, Attributes, and Timestamps
                 "/DCOPY:DAT",  # Copy directory Data, Attributes, and Timestamps
+                "/XF", "*.pst", # Exclude Outlook PST files
                 "/R:3",        # Retry 3 times on failed copies
                 "/W:10",       # Wait 10 seconds between retries
                 "/MT:16",      # Multi-threaded copying (16 threads for speed)
