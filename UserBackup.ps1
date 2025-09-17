@@ -178,21 +178,19 @@ function Start-UserBackup {
         if (Test-Path $sourcePath) {
             Write-Host "[$currentFolder/$totalFolders] Copying $folder..." -ForegroundColor Cyan
 
-            # Robocopy with optimal settings for speed and recovery
+            # Robocopy with complete mirroring and full file copy
             $robocopyArgs = @(
                 "`"$sourcePath`"",
                 "`"$destPath`"",
-                "/E",          # Copy subdirectories including empty ones
-                "/COPY:DAT",   # Copy Data, Attributes, and Timestamps
+                "/MIR",        # Mirror directory (copies everything, creates dirs, deletes extras)
+                "/COPYALL",    # Copy all file info (ensures Excel, images, hidden files included)
                 "/DCOPY:DAT",  # Copy directory Data, Attributes, and Timestamps
                 "/R:3",        # Retry 3 times on failed copies
                 "/W:10",       # Wait 10 seconds between retries
                 "/MT:16",      # Multi-threaded copying (16 threads for speed)
                 "/LOG+:`"$logFile`"",  # Append to log file
                 "/TEE",        # Output to console and log
-                "/NP",         # No progress percentage (reduces overhead)
-                "/NDL",        # No directory list
-                "/NFL"         # No file list (for speed)
+                "/NP"          # No progress percentage (reduces overhead)
             )
 
             # Start robocopy process
