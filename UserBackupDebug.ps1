@@ -302,10 +302,38 @@ if (-not $Username) {
     for ($i = 0; $i -lt $users.Count; $i++) {
         $userNum = $i + 1
 
-        # Use char array reconstruction to bypass string corruption
-        $userChars = $users[$i].ToCharArray()
-        $userName = -join $userChars
-        Write-Debug "Final display attempt using char array - user[$i]: '$userName' as number $userNum"
+        # Use multiple fallback methods to handle string display issues
+        $userName = $null
+        try {
+            # Method 1: StringBuilder
+            $sb = New-Object System.Text.StringBuilder
+            $sb.Append($users[$i]) | Out-Null
+            $userName = $sb.ToString()
+            Write-Debug "StringBuilder method worked: '$userName'"
+        } catch {
+            Write-Debug "StringBuilder failed: $($_.Exception.Message)"
+            try {
+                # Method 2: Format string
+                $userName = "{0}" -f $users[$i]
+                Write-Debug "Format string method worked: '$userName'"
+            } catch {
+                Write-Debug "Format string failed: $($_.Exception.Message)"
+                try {
+                    # Method 3: Manual character extraction
+                    $temp = $users[$i]
+                    $userName = ""
+                    for ($j = 0; $j -lt $temp.Length; $j++) {
+                        $userName += $temp[$j]
+                    }
+                    Write-Debug "Manual extraction worked: '$userName'"
+                } catch {
+                    Write-Debug "Manual extraction failed: $($_.Exception.Message)"
+                    # Method 4: Last resort
+                    $userName = $users[$i]
+                    Write-Debug "Using original: '$userName'"
+                }
+            }
+        }
 
         Write-Host "  $userNum. $userName"
     }
