@@ -193,24 +193,108 @@ function Compare-BackupProgress {
 
 # Function to get available storage devices
 function Get-StorageDevices {
-    $drives = Get-WmiObject -Class Win32_LogicalDisk | Where-Object {
-        $_.DriveType -eq 2 -or $_.DriveType -eq 3
-    } | Select-Object DeviceID, VolumeName, Size, FreeSpace, DriveType
-
     $deviceList = @()
-    foreach ($drive in $drives) {
-        $sizeGB = [math]::Round($drive.Size / 1GB, 2)
-        $freeGB = [math]::Round($drive.FreeSpace / 1GB, 2)
-        $type = if ($drive.DriveType -eq 2) { "Removable" } else { "Fixed" }
 
-        $deviceList += [PSCustomObject]@{
-            Drive = $drive.DeviceID
-            Label = if ($drive.VolumeName) { $drive.VolumeName } else { "Unlabeled" }
-            Size = "$sizeGB GB"
-            Free = "$freeGB GB"
-            Type = $type
+    try {
+        # Try modern CIM cmdlets first (Windows 8/2012+)
+        Write-Host "Detecting storage devices..." -ForegroundColor Gray
+        $drives = Get-CimInstance -ClassName Win32_LogicalDisk -ErrorAction Stop | Where-Object {
+            $_.DriveType -eq 2 -or $_.DriveType -eq 3
+        }
+
+        foreach ($drive in $drives) {
+            $sizeGB = [math]::Round($drive.Size / 1GB, 2)
+            $freeGB = [math]::Round($drive.FreeSpace / 1GB, 2)
+            $type = if ($drive.DriveType -eq 2) { "Removable" } else { "Fixed" }
+
+            $deviceList += [PSCustomObject]@{
+                Drive = $drive.DeviceID
+                Label = if ($drive.VolumeName) { $drive.VolumeName } else { "Unlabeled" }
+                Size = "$sizeGB GB"
+                Free = "$freeGB GB"
+                Type = $type
+            }
         }
     }
+    catch {
+        Write-Host "CIM method failed, trying WMI..." -ForegroundColor Yellow
+        try {
+            # Fallback to older WMI method
+            $drives = Get-WmiObject -Class Win32_LogicalDisk -ErrorAction Stop | Where-Object {
+                $_.DriveType -eq 2 -or $_.DriveType -eq 3
+            }
+
+            foreach ($drive in $drives) {
+                $sizeGB = [math]::Round($drive.Size / 1GB, 2)
+                $freeGB = [math]::Round($drive.FreeSpace / 1GB, 2)
+                $type = if ($drive.DriveType -eq 2) { "Removable" } else { "Fixed" }
+
+                $deviceList += [PSCustomObject]@{
+                    Drive = $drive.DeviceID
+                    Label = if ($drive.VolumeName) { $drive.VolumeName } else { "Unlabeled" }
+                    Size = "$sizeGB GB"
+                    Free = "$freeGB GB"
+                    Type = $type
+                }
+            }
+        }
+        catch {
+            Write-Host "WMI method failed, using basic drive detection..." -ForegroundColor Yellow
+            try {
+                # Final fallback - use Get-PSDrive and manual checks
+                $psDrives = Get-PSDrive -PSProvider FileSystem | Where-Object {
+                    $_.Name -match '^[A-Z]$' -and (Test-Path "$($_.Name):\")
+                }
+
+                foreach ($drive in $psDrives) {
+                    try {
+                        $driveLetter = $drive.Name + ":"
+                        $driveInfo = Get-WmiObject -Query "SELECT * FROM Win32_LogicalDisk WHERE DeviceID='$driveLetter'" -ErrorAction SilentlyContinue
+
+                        if ($driveInfo) {
+                            $sizeGB = [math]::Round($driveInfo.Size / 1GB, 2)
+                            $freeGB = [math]::Round($driveInfo.FreeSpace / 1GB, 2)
+                            $type = if ($driveInfo.DriveType -eq 2) { "Removable" } else { "Fixed" }
+                        } else {
+                            # If WMI completely fails, just show the drive exists
+                            $sizeGB = "Unknown"
+                            $freeGB = "Unknown"
+                            $type = "Unknown"
+                        }
+
+                        $deviceList += [PSCustomObject]@{
+                            Drive = $driveLetter
+                            Label = "Drive $driveLetter"
+                            Size = if ($sizeGB -eq "Unknown") { "Unknown" } else { "$sizeGB GB" }
+                            Free = if ($freeGB -eq "Unknown") { "Unknown" } else { "$freeGB GB" }
+                            Type = $type
+                        }
+                    }
+                    catch {
+                        # Skip drives that cause errors
+                        continue
+                    }
+                }
+            }
+            catch {
+                Write-Host "All drive detection methods failed. Showing available drive letters..." -ForegroundColor Red
+                # Last resort - show common drive letters that exist
+                $letters = @("C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z")
+                foreach ($letter in $letters) {
+                    if (Test-Path "$letter`:\") {
+                        $deviceList += [PSCustomObject]@{
+                            Drive = "$letter`:"
+                            Label = "Drive $letter"
+                            Size = "Unknown"
+                            Free = "Unknown"
+                            Type = "Unknown"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     return $deviceList
 }
 
