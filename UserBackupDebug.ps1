@@ -282,13 +282,13 @@ function Start-UserBackup {
             # Check exit codes (0-3 are success, 4+ indicate issues)
             if ($process.ExitCode -le 3) {
                 Write-Host "  ✓ $folder completed successfully" -ForegroundColor Green
-                Write-Debug "  $folder: SUCCESS - Exit code $($process.ExitCode)"
+                Write-Debug "  $folder - SUCCESS - Exit code $($process.ExitCode)"
             } elseif ($process.ExitCode -le 7) {
                 Write-Host "  ⚠ $folder completed with warnings (Exit code: $($process.ExitCode))" -ForegroundColor Yellow
-                Write-Debug "  $folder: WARNING - Exit code $($process.ExitCode)"
+                Write-Debug "  $folder - WARNING - Exit code $($process.ExitCode)"
             } else {
                 Write-Host "  ✗ $folder failed (Exit code: $($process.ExitCode))" -ForegroundColor Red
-                Write-Debug "  $folder: FAILED - Exit code $($process.ExitCode)"
+                Write-Debug "  $folder - FAILED - Exit code $($process.ExitCode)"
             }
         } else {
             Write-Host "[$currentFolder/$totalFolders] Skipping $folder (not found)" -ForegroundColor Gray
