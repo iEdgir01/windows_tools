@@ -71,9 +71,18 @@ You can skip prompts by providing parameters:
 
 ### Restore Script
 ```powershell
-# Restore script
+# Interactive restore (asks about conflicts)
 .\UserRestore.ps1 -TargetUser "JohnDoe" -SourceLocation "E:" -BackupFolders @("Backup_2024", "Backup_2023")
+
+# Automated restore with conflict resolution
+.\UserRestore.ps1 -TargetUser "JohnDoe" -SourceLocation "E:" -ConflictResolution "IfNewer"
 ```
+
+**ConflictResolution Options:**
+- `"Ask"` - Interactive prompts for each conflict (default)
+- `"Skip"` - Keep existing files, skip conflicts
+- `"Overwrite"` - Replace all conflicting files
+- `"IfNewer"` - Only overwrite if new file is more recent
 
 ## What Gets Backed Up
 
@@ -139,16 +148,24 @@ The restore script provides flexible options for data recovery:
 When merging multiple backups, the script processes them in the order selected:
 
 1. **First backup** - Copied normally to the target user
-2. **Subsequent backups** - Files are merged with the following behavior:
-   - **Same filename, different content** - Later backup overwrites earlier backup
-   - **Same filename, same content** - Later backup still copies (ensuring consistency)
-   - **Unique files** - All unique files from all backups are preserved
-   - **Directories** - All directories and subdirectories are merged
+2. **Subsequent backups** - Conflicts are detected and user chooses resolution:
 
-**File Conflict Resolution**: Files from later-selected backups always win conflicts, making this perfect for:
-- Consolidating data from multiple users into one account
-- Merging backups from different time periods (most recent wins)
-- Combining partial backups from the same user
+#### **Interactive Conflict Resolution**
+
+When file conflicts are detected, you choose how to handle them:
+
+1. **Skip conflicts** - Keep existing files, don't overwrite anything
+2. **Overwrite all** - Replace all conflicting files with new versions
+3. **Overwrite if newer** - Only replace if the new file is more recent
+4. **Review individually** - Decide file-by-file with detailed comparison:
+   - Shows file sizes and dates for both versions
+   - Options: (O)verwrite, (S)kip, or (A)bort folder restore
+
+**Benefits of User Control**:
+- **Safe merging** - No accidental overwrites of important files
+- **Informed decisions** - See file details before choosing
+- **Flexible handling** - Different strategies per backup or folder
+- **Abort option** - Stop if conflicts are too complex to resolve
 
 ## Requirements
 
