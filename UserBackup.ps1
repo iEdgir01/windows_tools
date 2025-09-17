@@ -194,10 +194,10 @@ function Compare-BackupProgress {
 # Function to get available storage devices
 function Get-StorageDevices {
     $deviceList = @()
+    Write-Host "Detecting storage devices..." -ForegroundColor Gray
 
+    # Method 1: Try CIM first (PowerShell 7+ compatible)
     try {
-        # Try modern CIM cmdlets first (Windows 8/2012+)
-        Write-Host "Detecting storage devices..." -ForegroundColor Gray
         $drives = Get-CimInstance -ClassName Win32_LogicalDisk -ErrorAction Stop | Where-Object {
             $_.DriveType -eq 2 -or $_.DriveType -eq 3
         }
@@ -215,11 +215,16 @@ function Get-StorageDevices {
                 Type = $type
             }
         }
+        return $deviceList
     }
     catch {
-        Write-Host "CIM method failed, trying WMI..." -ForegroundColor Yellow
+        Write-Host "CIM method failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    # Method 2: Try WMI (if available - PowerShell 5.x)
+    if (Get-Command Get-WmiObject -ErrorAction SilentlyContinue) {
         try {
-            # Fallback to older WMI method
+            Write-Host "Trying WMI method..." -ForegroundColor Yellow
             $drives = Get-WmiObject -Class Win32_LogicalDisk -ErrorAction Stop | Where-Object {
                 $_.DriveType -eq 2 -or $_.DriveType -eq 3
             }
@@ -237,69 +242,69 @@ function Get-StorageDevices {
                     Type = $type
                 }
             }
+            return $deviceList
         }
         catch {
-            Write-Host "WMI method failed, using basic drive detection..." -ForegroundColor Yellow
-            try {
-                # Final fallback - use Get-PSDrive and manual checks
-                $psDrives = Get-PSDrive -PSProvider FileSystem | Where-Object {
-                    $_.Name -match '^[A-Z]$' -and (Test-Path "$($_.Name):\")
+            Write-Host "WMI method failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+
+    # Method 3: PowerShell-native fallback (no WMI dependency)
+    try {
+        Write-Host "Using PowerShell drive detection..." -ForegroundColor Yellow
+        $psDrives = Get-PSDrive -PSProvider FileSystem | Where-Object {
+            $_.Name -match '^[A-Z]$' -and (Test-Path "$($_.Name):\")
+        }
+
+        foreach ($drive in $psDrives) {
+            $driveLetter = $drive.Name + ":"
+
+            # Try Get-Volume for size info (PowerShell 3+)
+            $sizeGB = "Unknown"
+            $freeGB = "Unknown"
+            $label = "Drive $driveLetter"
+            $type = "Unknown"
+
+            if (Get-Command Get-Volume -ErrorAction SilentlyContinue) {
+                try {
+                    $volumeInfo = Get-Volume -DriveLetter $drive.Name -ErrorAction SilentlyContinue
+                    if ($volumeInfo) {
+                        $sizeGB = [math]::Round($volumeInfo.Size / 1GB, 2)
+                        $freeGB = [math]::Round($volumeInfo.SizeRemaining / 1GB, 2)
+                        $label = if ($volumeInfo.FileSystemLabel) { $volumeInfo.FileSystemLabel } else { "Unlabeled" }
+                        $type = "Fixed" # Default since we can't detect removable easily
+                    }
                 }
-
-                foreach ($drive in $psDrives) {
-                    try {
-                        $driveLetter = $drive.Name + ":"
-
-                        # Try to get basic drive info without WMI
-                        try {
-                            $driveInfo = Get-Volume -DriveLetter $drive.Name -ErrorAction SilentlyContinue
-                            if ($driveInfo) {
-                                $sizeGB = [math]::Round($driveInfo.Size / 1GB, 2)
-                                $freeGB = [math]::Round(($driveInfo.Size - $driveInfo.SizeRemaining) / 1GB, 2)
-                                $type = "Fixed"  # Default since we can't easily detect removable without WMI
-                            } else {
-                                # Fallback - just show the drive exists
-                                $sizeGB = "Unknown"
-                                $freeGB = "Unknown"
-                                $type = "Unknown"
-                            }
-                        }
-                        catch {
-                            # If Get-Volume fails, just show the drive exists
-                            $sizeGB = "Unknown"
-                            $freeGB = "Unknown"
-                            $type = "Unknown"
-                        }
-
-                        $deviceList += [PSCustomObject]@{
-                            Drive = $driveLetter
-                            Label = "Drive $driveLetter"
-                            Size = if ($sizeGB -eq "Unknown") { "Unknown" } else { "$sizeGB GB" }
-                            Free = if ($freeGB -eq "Unknown") { "Unknown" } else { "$freeGB GB" }
-                            Type = $type
-                        }
-                    }
-                    catch {
-                        # Skip drives that cause errors
-                        continue
-                    }
+                catch {
+                    # Keep defaults if Get-Volume fails
                 }
             }
-            catch {
-                Write-Host "All drive detection methods failed. Showing available drive letters..." -ForegroundColor Red
-                # Last resort - show common drive letters that exist
-                $letters = @("C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z")
-                foreach ($letter in $letters) {
-                    if (Test-Path "$letter`:\") {
-                        $deviceList += [PSCustomObject]@{
-                            Drive = "$letter`:"
-                            Label = "Drive $letter"
-                            Size = "Unknown"
-                            Free = "Unknown"
-                            Type = "Unknown"
-                        }
-                    }
-                }
+
+            $deviceList += [PSCustomObject]@{
+                Drive = $driveLetter
+                Label = $label
+                Size = if ($sizeGB -eq "Unknown") { "Unknown" } else { "$sizeGB GB" }
+                Free = if ($freeGB -eq "Unknown") { "Unknown" } else { "$freeGB GB" }
+                Type = $type
+            }
+        }
+        return $deviceList
+    }
+    catch {
+        Write-Host "PowerShell drive detection failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    # Method 4: Last resort - manual drive letter check
+    Write-Host "Using basic drive letter detection..." -ForegroundColor Red
+    $letters = @("C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z")
+    foreach ($letter in $letters) {
+        if (Test-Path "$letter`:\") {
+            $deviceList += [PSCustomObject]@{
+                Drive = "$letter`:"
+                Label = "Drive $letter"
+                Size = "Unknown"
+                Free = "Unknown"
+                Type = "Unknown"
             }
         }
     }
@@ -731,8 +736,8 @@ try {
     # Start the backup
     $startTime = Get-Date
     try {
-        if ($isResume -and $backupAnalysis) {
-            Start-UserBackup -UserPath $userProfilePath -DestinationPath $fullBackupPath -UserName $Username -BackupAnalysis $backupAnalysis
+        if ($isResume -and $analysis) {
+            Start-UserBackup -UserPath $userProfilePath -DestinationPath $fullBackupPath -UserName $Username -BackupAnalysis $analysis
         } else {
             Start-UserBackup -UserPath $userProfilePath -DestinationPath $fullBackupPath -UserName $Username
         }
