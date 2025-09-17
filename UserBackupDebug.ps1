@@ -63,22 +63,51 @@ function Show-Header {
 # Function to get available users
 function Get-AvailableUsers {
     Write-Debug "Starting Get-AvailableUsers function"
-    $userFolders = Get-ChildItem "C:\Users" | Where-Object {
+
+    # Try multiple approaches to get user folders
+    Write-Debug "Method 1: Get-ChildItem with Name property"
+    $userFolders1 = Get-ChildItem "C:\Users" | Where-Object {
         $_.PSIsContainer -and
         $_.Name -notin @("Public", "Default", "Default User", "All Users")
     }
 
-    Write-Debug "Found $($userFolders.Count) user folders"
+    foreach ($folder in $userFolders1) {
+        Write-Debug "  Folder1.Name: '$($folder.Name)' | FullName: '$($folder.FullName)' | BaseName: '$($folder.BaseName)'"
+    }
+
+    Write-Debug "Method 2: Get-ChildItem with different approach"
+    $userFolders2 = Get-ChildItem "C:\Users" -Directory | Where-Object {
+        $_.Name -notin @("Public", "Default", "Default User", "All Users")
+    }
+
+    foreach ($folder in $userFolders2) {
+        Write-Debug "  Folder2.Name: '$($folder.Name)' | DisplayName: '$($folder.DisplayName)' | BaseName: '$($folder.BaseName)'"
+    }
+
+    Write-Debug "Method 3: Direct directory listing"
+    $dirs = [System.IO.Directory]::GetDirectories("C:\Users")
+    foreach ($dir in $dirs) {
+        $dirName = [System.IO.Path]::GetFileName($dir)
+        if ($dirName -notin @("Public", "Default", "Default User", "All Users")) {
+            Write-Debug "  Directory: '$dirName' | FullPath: '$dir'"
+        }
+    }
+
+    Write-Debug "Found $($userFolders1.Count) user folders"
 
     $users = @()
-    foreach ($folder in $userFolders) {
-        Write-Debug "Processing folder: '$($folder.Name)' (Type: $($folder.Name.GetType().Name)) (Length: $($folder.Name.Length))"
-        $users += $folder.Name
+    foreach ($folder in $userFolders1) {
+        $folderName = $folder.Name
+        Write-Debug "Processing folder: '$folderName' (Type: $($folderName.GetType().Name)) (Length: $($folderName.Length))"
+        Write-Debug "  Raw folder object: $($folder | Out-String)"
+        $users += $folderName
     }
 
     Write-Debug "Final users array count: $($users.Count)"
     for ($i = 0; $i -lt $users.Count; $i++) {
-        Write-Debug "User[$i]: '$($users[$i])' (Type: $($users[$i].GetType().Name)) (Length: $($users[$i].Length))"
+        $user = $users[$i]
+        Write-Debug "User[$i]: '$user' (Type: $($user.GetType().Name)) (Length: $($user.Length))"
+        Write-Debug "  Char by char: $(for($j=0; $j -lt $user.Length; $j++) { "$j=$($user[$j]) " })"
     }
 
     return $users
