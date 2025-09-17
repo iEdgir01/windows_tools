@@ -214,11 +214,15 @@ function Start-UserBackup {
         if (Test-Path $sourcePath) {
             Write-Host "[$currentFolder/$totalFolders] Copying $folder..." -ForegroundColor Cyan
 
-            # Robocopy with optimal settings for speed and recovery
+            # Robocopy with complete mirroring and full file copy
+            Write-Debug "Preparing robocopy for folder: $folder"
+            Write-Debug "  Source: $sourcePath"
+            Write-Debug "  Destination: $destPath"
+
             $robocopyArgs = @(
                 "`"$sourcePath`"",
                 "`"$destPath`"",
-                "/E",          # Copy subdirectories including empty ones
+                "/MIR",        # Mirror directory (copies everything, creates dirs, deletes extras)
                 "/COPY:DAT",   # Copy Data, Attributes, and Timestamps
                 "/DCOPY:DAT",  # Copy directory Data, Attributes, and Timestamps
                 "/R:3",        # Retry 3 times on failed copies
@@ -226,21 +230,31 @@ function Start-UserBackup {
                 "/MT:16",      # Multi-threaded copying (16 threads for speed)
                 "/LOG+:`"$logFile`"",  # Append to log file
                 "/TEE",        # Output to console and log
-                "/NP",         # No progress percentage (reduces overhead)
-                "/NDL",        # No directory list
-                "/NFL"         # No file list (for speed)
+                "/NP"          # No progress percentage (reduces overhead)
             )
 
+            Write-Debug "Robocopy arguments: $($robocopyArgs -join ' ')"
+
             # Start robocopy process
+            Write-Debug "Starting robocopy process for $folder..."
+            $startFolderTime = Get-Date
             $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -NoNewWindow -PassThru -Wait
+            $endFolderTime = Get-Date
+            $folderDuration = $endFolderTime - $startFolderTime
+
+            Write-Debug "Robocopy completed for $folder in $($folderDuration.TotalSeconds) seconds"
+            Write-Debug "Exit code: $($process.ExitCode)"
 
             # Check exit codes (0-3 are success, 4+ indicate issues)
             if ($process.ExitCode -le 3) {
                 Write-Host "  ✓ $folder completed successfully" -ForegroundColor Green
+                Write-Debug "  $folder: SUCCESS - Exit code $($process.ExitCode)"
             } elseif ($process.ExitCode -le 7) {
                 Write-Host "  ⚠ $folder completed with warnings (Exit code: $($process.ExitCode))" -ForegroundColor Yellow
+                Write-Debug "  $folder: WARNING - Exit code $($process.ExitCode)"
             } else {
                 Write-Host "  ✗ $folder failed (Exit code: $($process.ExitCode))" -ForegroundColor Red
+                Write-Debug "  $folder: FAILED - Exit code $($process.ExitCode)"
             }
         } else {
             Write-Host "[$currentFolder/$totalFolders] Skipping $folder (not found)" -ForegroundColor Gray

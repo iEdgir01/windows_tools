@@ -183,7 +183,7 @@ function Start-UserBackup {
                 "`"$sourcePath`"",
                 "`"$destPath`"",
                 "/MIR",        # Mirror directory (copies everything, creates dirs, deletes extras)
-                "/COPYALL",    # Copy all file info (ensures Excel, images, hidden files included)
+                "/COPY:DAT",    # Copy all file info (ensures Excel, images, hidden files included)
                 "/DCOPY:DAT",  # Copy directory Data, Attributes, and Timestamps
                 "/R:3",        # Retry 3 times on failed copies
                 "/W:10",       # Wait 10 seconds between retries
