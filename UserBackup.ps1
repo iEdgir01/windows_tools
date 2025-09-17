@@ -249,14 +249,23 @@ function Get-StorageDevices {
                 foreach ($drive in $psDrives) {
                     try {
                         $driveLetter = $drive.Name + ":"
-                        $driveInfo = Get-WmiObject -Query "SELECT * FROM Win32_LogicalDisk WHERE DeviceID='$driveLetter'" -ErrorAction SilentlyContinue
 
-                        if ($driveInfo) {
-                            $sizeGB = [math]::Round($driveInfo.Size / 1GB, 2)
-                            $freeGB = [math]::Round($driveInfo.FreeSpace / 1GB, 2)
-                            $type = if ($driveInfo.DriveType -eq 2) { "Removable" } else { "Fixed" }
-                        } else {
-                            # If WMI completely fails, just show the drive exists
+                        # Try to get basic drive info without WMI
+                        try {
+                            $driveInfo = Get-Volume -DriveLetter $drive.Name -ErrorAction SilentlyContinue
+                            if ($driveInfo) {
+                                $sizeGB = [math]::Round($driveInfo.Size / 1GB, 2)
+                                $freeGB = [math]::Round(($driveInfo.Size - $driveInfo.SizeRemaining) / 1GB, 2)
+                                $type = "Fixed"  # Default since we can't easily detect removable without WMI
+                            } else {
+                                # Fallback - just show the drive exists
+                                $sizeGB = "Unknown"
+                                $freeGB = "Unknown"
+                                $type = "Unknown"
+                            }
+                        }
+                        catch {
+                            # If Get-Volume fails, just show the drive exists
                             $sizeGB = "Unknown"
                             $freeGB = "Unknown"
                             $type = "Unknown"
