@@ -707,6 +707,8 @@ function Start-UserBackup {
     $totalFolders = $foldersToProcess.Count + $oneDriveFoldersToProcess.Count
     $currentFolder = if ($savedProgress) { $savedProgress.CurrentFolder } else { 0 }
 
+    Write-Host "Processing $($foldersToProcess.Count) standard folders and $($oneDriveFoldersToProcess.Count) OneDrive folders (Total: $totalFolders)" -ForegroundColor Gray
+
     foreach ($folder in $foldersToProcess) {
         $currentFolder++
         $sourcePath = Join-Path $UserPath $folder
@@ -732,13 +734,14 @@ function Start-UserBackup {
                 "/COPY:DAT",   # Copy data, attributes, and timestamps
                 "/DCOPY:DAT",  # Copy directory attributes and timestamps
                 "/XF", "*.pst", # Exclude PST files
-                "/R:3",        # Retry 3 times
-                "/W:10",       # Wait 10 seconds between retries
-                "/MT:16",      # Multi-threaded copying
+                "/R:5",        # Retry 5 times (increased for error recovery)
+                "/W:30",       # Wait 30 seconds between retries (increased)
+                "/MT:8",       # Reduce threads to 8 for stability
                 "/LOG+:`"$logFile`"",  # Append to log file
                 "/NFL",        # No file list
                 "/NDL",        # No directory list
-                "/NP"          # No progress percentage
+                "/NP",         # No progress percentage
+                "/SKIP:SL"     # Skip symbolic links (can cause issues)
             )
 
             # Add exclude files for exact resume
@@ -767,13 +770,19 @@ function Start-UserBackup {
             # Save final progress for this folder
             Save-ProgressToLog -LogPath $logFile -CurrentFolder $currentFolder -TotalFolders $totalFolders -CurrentFile $currentFileCount -TotalFiles $totalFiles -CurrentFolderName $folder
 
-            # Status message below progress bar
-            $statusMsg = if ($process.ExitCode -le 3) {
-                "OK $folder completed successfully"
-            } elseif ($process.ExitCode -le 7) {
-                "WARN $folder completed with warnings (Exit code: $($process.ExitCode))"
-            } else {
-                "ERROR $folder failed (Exit code: $($process.ExitCode))"
+            # Enhanced status message with specific error interpretation
+            $statusMsg = switch ($process.ExitCode) {
+                0 { "OK $folder - No files copied (already up to date)" }
+                1 { "OK $folder - Files copied successfully" }
+                2 { "OK $folder - Extra files or directories detected and copied" }
+                3 { "OK $folder - Files copied with mismatches resolved" }
+                4 { "WARN $folder - Some mismatched files/dirs (Exit code: 4)" }
+                5 { "WARN $folder - Some files copied, some mismatches (Exit code: 5)" }
+                6 { "WARN $folder - Extra files and mismatches (Exit code: 6)" }
+                7 { "WARN $folder - Files copied, extra files, and mismatches (Exit code: 7)" }
+                8 { "ERROR $folder - Some files or directories could not be copied (permissions/locks)" }
+                16 { "ERROR $folder - Serious error, robocopy did not copy any files" }
+                default { "ERROR $folder - Unknown error (Exit code: $($process.ExitCode))" }
             }
             Write-Host $statusMsg.PadRight(80) -ForegroundColor $(if ($process.ExitCode -le 3) { "Green" } elseif ($process.ExitCode -le 7) { "Yellow" } else { "Red" })
         } else {
@@ -807,13 +816,14 @@ function Start-UserBackup {
                 "/COPY:DAT",   # Copy data, attributes, and timestamps
                 "/DCOPY:DAT",  # Copy directory attributes and timestamps
                 "/XF", "*.pst", # Exclude PST files
-                "/R:3",        # Retry 3 times
-                "/W:10",       # Wait 10 seconds between retries
-                "/MT:16",      # Multi-threaded copying
+                "/R:5",        # Retry 5 times (increased for error recovery)
+                "/W:30",       # Wait 30 seconds between retries (increased)
+                "/MT:8",       # Reduce threads to 8 for stability
                 "/LOG+:`"$logFile`"",  # Append to log file
                 "/NFL",        # No file list
                 "/NDL",        # No directory list
-                "/NP"          # No progress percentage
+                "/NP",         # No progress percentage
+                "/SKIP:SL"     # Skip symbolic links (can cause issues)
             )
 
             # Add exclude files for exact resume
@@ -841,13 +851,19 @@ function Start-UserBackup {
             # Save final progress for this folder
             Save-ProgressToLog -LogPath $logFile -CurrentFolder $currentFolder -TotalFolders $totalFolders -CurrentFile $currentFileCount -TotalFiles $totalFiles -CurrentFolderName $oneFolder.Dest
 
-            # Status message below progress bar
-            $statusMsg = if ($process.ExitCode -le 3) {
-                "OK $($oneFolder.Dest) completed successfully"
-            } elseif ($process.ExitCode -le 7) {
-                "WARN $($oneFolder.Dest) completed with warnings (Exit code: $($process.ExitCode))"
-            } else {
-                "ERROR $($oneFolder.Dest) failed (Exit code: $($process.ExitCode))"
+            # Enhanced status message with specific error interpretation
+            $statusMsg = switch ($process.ExitCode) {
+                0 { "OK $($oneFolder.Dest) - No files copied (already up to date)" }
+                1 { "OK $($oneFolder.Dest) - Files copied successfully" }
+                2 { "OK $($oneFolder.Dest) - Extra files or directories detected and copied" }
+                3 { "OK $($oneFolder.Dest) - Files copied with mismatches resolved" }
+                4 { "WARN $($oneFolder.Dest) - Some mismatched files/dirs (Exit code: 4)" }
+                5 { "WARN $($oneFolder.Dest) - Some files copied, some mismatches (Exit code: 5)" }
+                6 { "WARN $($oneFolder.Dest) - Extra files and mismatches (Exit code: 6)" }
+                7 { "WARN $($oneFolder.Dest) - Files copied, extra files, and mismatches (Exit code: 7)" }
+                8 { "ERROR $($oneFolder.Dest) - Some files or directories could not be copied (permissions/locks)" }
+                16 { "ERROR $($oneFolder.Dest) - Serious error, robocopy did not copy any files" }
+                default { "ERROR $($oneFolder.Dest) - Unknown error (Exit code: $($process.ExitCode))" }
             }
             Write-Host $statusMsg.PadRight(80) -ForegroundColor $(if ($process.ExitCode -le 3) { "Green" } elseif ($process.ExitCode -le 7) { "Yellow" } else { "Red" })
         } else {
