@@ -175,7 +175,11 @@ function Get-CopiedFilesByFolder {
         }
 
         foreach ($folder in $copiedFiles.Keys) {
-            Write-Log "Found $($copiedFiles[$folder].Count) copied files in $folder"
+            Write-Log "Found $($copiedFiles[$folder].Count) copied files in folder: '$folder'"
+        }
+
+        if ($copiedFiles.Keys.Count -eq 0) {
+            Write-Log "No folders with copied files found in log"
         }
 
         return $copiedFiles
@@ -530,9 +534,13 @@ function Start-UserBackup {
 
             # Build exclude list for exact file resume
             $excludeFiles = @()
-            if ($BackupAnalysis -and $BackupAnalysis.CopiedFiles.ContainsKey($folder)) {
-                $excludeFiles = $BackupAnalysis.CopiedFiles[$folder]
-                Write-Host "  Excluding $($excludeFiles.Count) already copied files" -ForegroundColor Gray
+            if ($BackupAnalysis -and $BackupAnalysis.CopiedFiles) {
+                if ($BackupAnalysis.CopiedFiles.ContainsKey($folder)) {
+                    $excludeFiles = $BackupAnalysis.CopiedFiles[$folder]
+                    Write-Host "  Excluding $($excludeFiles.Count) already copied files" -ForegroundColor Gray
+                } else {
+                    Write-Host "  No previous files found for $folder (starting fresh)" -ForegroundColor Gray
+                }
             }
 
             # Build robocopy arguments
@@ -616,9 +624,13 @@ function Start-UserBackup {
 
             # Build exclude list for exact file resume
             $excludeFiles = @()
-            if ($BackupAnalysis -and $BackupAnalysis.CopiedFiles.ContainsKey($oneFolder.Dest)) {
-                $excludeFiles = $BackupAnalysis.CopiedFiles[$oneFolder.Dest]
-                Write-Host "  Excluding $($excludeFiles.Count) already copied files" -ForegroundColor Gray
+            if ($BackupAnalysis -and $BackupAnalysis.CopiedFiles) {
+                if ($BackupAnalysis.CopiedFiles.ContainsKey($oneFolder.Dest)) {
+                    $excludeFiles = $BackupAnalysis.CopiedFiles[$oneFolder.Dest]
+                    Write-Host "  Excluding $($excludeFiles.Count) already copied files" -ForegroundColor Gray
+                } else {
+                    Write-Host "  No previous files found for $($oneFolder.Dest) (starting fresh)" -ForegroundColor Gray
+                }
             }
 
             # Build robocopy arguments
