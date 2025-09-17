@@ -64,52 +64,63 @@ function Show-Header {
 function Get-AvailableUsers {
     Write-Debug "Starting Get-AvailableUsers function"
 
-    # Try multiple approaches to get user folders
-    Write-Debug "Method 1: Get-ChildItem with Name property"
-    $userFolders1 = Get-ChildItem "C:\Users" | Where-Object {
-        $_.PSIsContainer -and
-        $_.Name -notin @("Public", "Default", "Default User", "All Users")
-    }
-
-    foreach ($folder in $userFolders1) {
-        Write-Debug "  Folder1.Name: '$($folder.Name)' | FullName: '$($folder.FullName)' | BaseName: '$($folder.BaseName)'"
-    }
-
-    Write-Debug "Method 2: Get-ChildItem with different approach"
-    $userFolders2 = Get-ChildItem "C:\Users" -Directory | Where-Object {
-        $_.Name -notin @("Public", "Default", "Default User", "All Users")
-    }
-
-    foreach ($folder in $userFolders2) {
-        Write-Debug "  Folder2.Name: '$($folder.Name)' | DisplayName: '$($folder.DisplayName)' | BaseName: '$($folder.BaseName)'"
-    }
-
-    Write-Debug "Method 3: Direct directory listing"
-    $dirs = [System.IO.Directory]::GetDirectories("C:\Users")
-    foreach ($dir in $dirs) {
-        $dirName = [System.IO.Path]::GetFileName($dir)
-        if ($dirName -notin @("Public", "Default", "Default User", "All Users")) {
-            Write-Debug "  Directory: '$dirName' | FullPath: '$dir'"
+    # Method 1: Try WMI to get user profiles (more reliable for display names)
+    Write-Debug "Method 1: WMI Win32_UserProfile approach"
+    try {
+        $wmiUsers = Get-WmiObject -Class Win32_UserProfile | Where-Object {
+            $_.LocalPath -like "C:\Users\*" -and
+            $_.LocalPath -notmatch "(Public|Default|All Users)$" -and
+            -not $_.Special
         }
+
+        Write-Debug "Found $($wmiUsers.Count) WMI user profiles"
+
+        if ($wmiUsers) {
+            $users = @()
+            foreach ($profile in $wmiUsers) {
+                $userName = Split-Path $profile.LocalPath -Leaf
+                Write-Debug "  WMI Profile: LocalPath='$($profile.LocalPath)' | SID='$($profile.SID)' | FolderName='$userName'"
+
+                # Get the SID and try to resolve to a friendly name
+                try {
+                    $sid = New-Object System.Security.Principal.SecurityIdentifier($profile.SID)
+                    $ntAccount = $sid.Translate([System.Security.Principal.NTAccount])
+                    $friendlyName = $ntAccount.Value.Split('\')[-1]
+                    Write-Debug "    SID resolved to: '$($ntAccount.Value)' | FriendlyName: '$friendlyName'"
+                    if ($friendlyName -and $friendlyName -ne $userName) {
+                        Write-Debug "    Using friendly name '$friendlyName' instead of folder name '$userName'"
+                        $userName = $friendlyName
+                    }
+                } catch {
+                    Write-Debug "    SID translation failed: $($_.Exception.Message)"
+                }
+                $users += $userName
+                Write-Debug "    Final username added: '$userName'"
+            }
+            if ($users.Count -gt 0) {
+                Write-Debug "WMI method successful, returning $($users.Count) users"
+                return $users
+            }
+        }
+    } catch {
+        Write-Debug "WMI method failed: $($_.Exception.Message)"
     }
 
-    Write-Debug "Found $($userFolders1.Count) user folders"
+    # Method 2: Fallback to directory listing
+    Write-Debug "Method 2: Fallback to directory listing"
+    $userFolders = Get-ChildItem "C:\Users" -Directory | Where-Object {
+        $_.Name -notin @("Public", "Default", "Default User", "All Users")
+    }
 
+    Write-Debug "Found $($userFolders.Count) user folders via directory listing"
     $users = @()
-    foreach ($folder in $userFolders1) {
+    foreach ($folder in $userFolders) {
         $folderName = $folder.Name
-        Write-Debug "Processing folder: '$folderName' (Type: $($folderName.GetType().Name)) (Length: $($folderName.Length))"
-        Write-Debug "  Raw folder object: $($folder | Out-String)"
+        Write-Debug "  Processing folder: '$folderName' (Length: $($folderName.Length))"
         $users += $folderName
     }
 
-    Write-Debug "Final users array count: $($users.Count)"
-    for ($i = 0; $i -lt $users.Count; $i++) {
-        $user = $users[$i]
-        Write-Debug "User[$i]: '$user' (Type: $($user.GetType().Name)) (Length: $($user.Length))"
-        Write-Debug "  Char by char: $(for($j=0; $j -lt $user.Length; $j++) { "$j=$($user[$j]) " })"
-    }
-
+    Write-Debug "Directory method returning $($users.Count) users"
     return $users
 }
 

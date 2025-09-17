@@ -19,8 +19,41 @@ function Show-Header {
 
 # Function to get available users
 function Get-AvailableUsers {
-    $userFolders = Get-ChildItem "C:\Users" | Where-Object {
-        $_.PSIsContainer -and
+    # Method 1: Try WMI to get user profiles (more reliable for display names)
+    try {
+        $wmiUsers = Get-WmiObject -Class Win32_UserProfile | Where-Object {
+            $_.LocalPath -like "C:\Users\*" -and
+            $_.LocalPath -notmatch "(Public|Default|All Users)$" -and
+            -not $_.Special
+        }
+
+        if ($wmiUsers) {
+            $users = @()
+            foreach ($profile in $wmiUsers) {
+                $userName = Split-Path $profile.LocalPath -Leaf
+                # Get the SID and try to resolve to a friendly name
+                try {
+                    $sid = New-Object System.Security.Principal.SecurityIdentifier($profile.SID)
+                    $ntAccount = $sid.Translate([System.Security.Principal.NTAccount])
+                    $friendlyName = $ntAccount.Value.Split('\')[-1]
+                    if ($friendlyName -and $friendlyName -ne $userName) {
+                        $userName = $friendlyName
+                    }
+                } catch {
+                    # If translation fails, use the folder name
+                }
+                $users += $userName
+            }
+            if ($users.Count -gt 0) {
+                return $users
+            }
+        }
+    } catch {
+        # Fall back to directory method if WMI fails
+    }
+
+    # Method 2: Fallback to directory listing
+    $userFolders = Get-ChildItem "C:\Users" -Directory | Where-Object {
         $_.Name -notin @("Public", "Default", "Default User", "All Users")
     }
 
