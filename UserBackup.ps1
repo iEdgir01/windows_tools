@@ -751,7 +751,7 @@ function Start-UserBackup {
             Save-ProgressToLog -LogPath $logFile -CurrentFolder $currentFolder -TotalFolders $totalFolders -CurrentFile $currentFileCount -TotalFiles $totalFiles -CurrentFolderName $folder
 
             # Start robocopy process (hidden output)
-            $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -NoNewWindow -PassThru -Wait -WindowStyle Hidden
+            $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -PassThru -Wait -WindowStyle Hidden
 
             # Update file count estimate (rough)
             if (Test-Path $sourcePath) {
@@ -826,7 +826,7 @@ function Start-UserBackup {
             Save-ProgressToLog -LogPath $logFile -CurrentFolder $currentFolder -TotalFolders $totalFolders -CurrentFile $currentFileCount -TotalFiles $totalFiles -CurrentFolderName $oneFolder.Dest
 
             # Start robocopy process (hidden output)
-            $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -NoNewWindow -PassThru -Wait -WindowStyle Hidden
+            $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -PassThru -Wait -WindowStyle Hidden
 
             # Update file count estimate
             if (Test-Path $oneFolder.Source) {
