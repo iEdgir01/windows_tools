@@ -170,8 +170,9 @@ if (-not $Username) {
     Write-Host "Available users:" -ForegroundColor Yellow
     for ($i = 0; $i -lt $users.Count; $i++) {
         $userNum = $i + 1
-        $userName = $users[$i]
-        Write-Host "  $userNum. $userName"
+        $userName = $users[$i].ToString()
+        Write-Host "  $userNum. $userName" -NoNewline
+        Write-Host ""
     }
 
     do {
