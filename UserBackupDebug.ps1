@@ -296,20 +296,47 @@ function Start-UserBackup {
     }
 }
 
-# Main script execution
-Start-DebugConsole
-Remove-Item "$env:TEMP\backup_debug.log" -ErrorAction SilentlyContinue
-Write-Debug "=== BACKUP SCRIPT STARTED WITH DEBUG ==="
-Show-Header
+# Function to handle errors and prevent window closure
+function Handle-Error {
+    param([string]$ErrorMessage, [bool]$Critical = $false)
 
-# Get username if not provided
-if (-not $Username) {
-    $users = Get-AvailableUsers
+    Write-Host "`nERROR: $ErrorMessage" -ForegroundColor Red
+    Write-Debug "ERROR: $ErrorMessage"
 
-    if ($users.Count -eq 0) {
-        Write-Host "No user profiles found!" -ForegroundColor Red
+    if ($Critical) {
+        Write-Host "`nThis is a critical error that prevents the script from continuing." -ForegroundColor Red
+        Write-Host "Please check the error message above and try again." -ForegroundColor Yellow
+        Write-Debug "CRITICAL ERROR - Script stopping"
+        Write-Host "`nPress any key to exit..."
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
         exit 1
+    } else {
+        Write-Host "The script will attempt to continue..." -ForegroundColor Yellow
+        Write-Debug "Non-critical error - continuing execution"
     }
+}
+
+# Set error action preference to stop on errors but handle them gracefully
+$ErrorActionPreference = "Stop"
+
+# Main script execution with error handling
+try {
+    Start-DebugConsole
+    Remove-Item "$env:TEMP\backup_debug.log" -ErrorAction SilentlyContinue
+    Write-Debug "=== BACKUP SCRIPT STARTED WITH DEBUG ==="
+    Show-Header
+
+    # Get username if not provided
+    if (-not $Username) {
+        try {
+            $users = Get-AvailableUsers
+
+            if ($users.Count -eq 0) {
+                Handle-Error "No user profiles found!" -Critical $true
+            }
+        } catch {
+            Handle-Error "Failed to get available users: $($_.Exception.Message)" -Critical $true
+        }
 
     Write-Debug "About to display users. Array count: $($users.Count)"
 
@@ -361,16 +388,15 @@ if (-not $Username) {
         $userIndex = [int]$selection - 1
     } while ($userIndex -lt 0 -or $userIndex -ge $users.Count)
 
-    $Username = $users[$userIndex]
-}
+        $Username = $users[$userIndex]
+    }
 
-$userProfilePath = "C:\Users\$Username"
-if (-not (Test-Path $userProfilePath)) {
-    Write-Host "User profile not found: $userProfilePath" -ForegroundColor Red
-    exit 1
-}
+    $userProfilePath = "C:\Users\$Username"
+    if (-not (Test-Path $userProfilePath)) {
+        Handle-Error "User profile not found: $userProfilePath" -Critical $true
+    }
 
-Write-Host "Selected user: $Username" -ForegroundColor Green
+    Write-Host "Selected user: $Username" -ForegroundColor Green
 
 # Get backup location if not provided
 if (-not $BackupLocation) {
@@ -456,5 +482,17 @@ Write-Host "  Location: $fullBackupPath"
 Write-Host "  Log file: $(Join-Path $fullBackupPath 'backup_log.txt')"
 Write-Host "=================================" -ForegroundColor Green
 
-Write-Host "`nPress any key to exit..."
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+} catch {
+    # Catch any unhandled errors in the main execution
+    Write-Host "`nUnexpected error occurred:" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Debug "UNHANDLED ERROR: $($_.Exception.Message)"
+    Write-Debug "STACK TRACE: $($_.ScriptStackTrace)"
+    Write-Host "`nStack trace:" -ForegroundColor Gray
+    Write-Host $_.ScriptStackTrace -ForegroundColor Gray
+} finally {
+    # Always prompt before closing, regardless of success or failure
+    Write-Debug "=== BACKUP SCRIPT FINISHED ==="
+    Write-Host "`nPress any key to exit..."
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+}

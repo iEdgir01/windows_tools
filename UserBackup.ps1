@@ -70,8 +70,7 @@ function Select-User {
     }
 
     if ($userFolders.Count -eq 0) {
-        Write-Host "No user profiles found!" -ForegroundColor Red
-        exit 1
+        throw "No user profiles found in C:\Users directory!"
     }
 
     $userNum = 1
@@ -288,30 +287,57 @@ function Start-UserBackup {
     }
 }
 
-# Main script execution
-Show-Header
+# Function to handle errors and prevent window closure
+function Handle-Error {
+    param([string]$ErrorMessage, [bool]$Critical = $false)
 
-# Get username if not provided
-if (-not $Username) {
-    $Username = Select-User
-}
+    Write-Host "`nERROR: $ErrorMessage" -ForegroundColor Red
 
-$userProfilePath = "C:\Users\$Username"
-if (-not (Test-Path $userProfilePath)) {
-    Write-Host "User profile not found: $userProfilePath" -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "Selected user: $Username" -ForegroundColor Green
-
-# Get backup location if not provided
-if (-not $BackupLocation) {
-    $devices = Get-StorageDevices
-
-    if ($devices.Count -eq 0) {
-        Write-Host "No storage devices found!" -ForegroundColor Red
+    if ($Critical) {
+        Write-Host "`nThis is a critical error that prevents the script from continuing." -ForegroundColor Red
+        Write-Host "Please check the error message above and try again." -ForegroundColor Yellow
+        Write-Host "`nPress any key to exit..."
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
         exit 1
+    } else {
+        Write-Host "The script will attempt to continue..." -ForegroundColor Yellow
     }
+}
+
+# Set error action preference to stop on errors but handle them gracefully
+$ErrorActionPreference = "Stop"
+
+# Main script execution with error handling
+try {
+    Show-Header
+
+    # Get username if not provided
+    if (-not $Username) {
+        try {
+            $Username = Select-User
+        } catch {
+            Handle-Error "Failed to select user: $($_.Exception.Message)" -Critical $true
+        }
+    }
+
+    $userProfilePath = "C:\Users\$Username"
+    if (-not (Test-Path $userProfilePath)) {
+        Handle-Error "User profile not found: $userProfilePath" -Critical $true
+    }
+
+    Write-Host "Selected user: $Username" -ForegroundColor Green
+
+    # Get backup location if not provided
+    if (-not $BackupLocation) {
+        try {
+            $devices = Get-StorageDevices
+
+            if ($devices.Count -eq 0) {
+                Handle-Error "No storage devices found!" -Critical $true
+            }
+        } catch {
+            Handle-Error "Failed to get storage devices: $($_.Exception.Message)" -Critical $true
+        }
 
     Write-Host "`nAvailable storage devices:" -ForegroundColor Yellow
     Write-Host "Drive | Label        | Size      | Free      | Type" -ForegroundColor Gray
@@ -331,62 +357,88 @@ if (-not $BackupLocation) {
         $deviceIndex = [int]$selection - 1
     } while ($deviceIndex -lt 0 -or $deviceIndex -ge $devices.Count)
 
-    $BackupLocation = $devices[$deviceIndex].Drive
-}
+        $BackupLocation = $devices[$deviceIndex].Drive
+    }
 
-Write-Host "Selected backup location: $BackupLocation" -ForegroundColor Green
+    Write-Host "Selected backup location: $BackupLocation" -ForegroundColor Green
 
-# Get backup folder if not provided
-if (-not $BackupFolder) {
-    $BackupFolder = Read-Host "`nEnter backup folder name (will be created in $BackupLocation)"
-}
+    # Get backup folder if not provided
+    if (-not $BackupFolder) {
+        $BackupFolder = Read-Host "`nEnter backup folder name (will be created in $BackupLocation)"
+    }
 
-$fullBackupPath = Join-Path $BackupLocation $BackupFolder
-Write-Host "Full backup path: $fullBackupPath" -ForegroundColor Green
+    $fullBackupPath = Join-Path $BackupLocation $BackupFolder
+    Write-Host "Full backup path: $fullBackupPath" -ForegroundColor Green
 
-# Create backup directory if it doesn't exist
-if (-not (Test-Path $fullBackupPath)) {
+    # Create backup directory if it doesn't exist
+    if (-not (Test-Path $fullBackupPath)) {
+        try {
+            New-Item -ItemType Directory -Path $fullBackupPath -Force | Out-Null
+            Write-Host "Created backup directory: $fullBackupPath" -ForegroundColor Green
+        }
+        catch {
+            Handle-Error "Failed to create backup directory: $($_.Exception.Message)" -Critical $true
+        }
+    }
+
+    # Get copy estimate
     try {
-        New-Item -ItemType Directory -Path $fullBackupPath -Force | Out-Null
-        Write-Host "Created backup directory: $fullBackupPath" -ForegroundColor Green
+        $estimate = Get-CopyEstimate -SourcePath $userProfilePath
+    } catch {
+        Handle-Error "Failed to calculate backup size: $($_.Exception.Message)" -Critical $false
+        # Create a default estimate to continue
+        $estimate = [PSCustomObject]@{
+            SizeGB = 0
+            FileCount = 0
+            EstimatedTimeUSB3 = 0
+            EstimatedTimeUSB2 = 0
+        }
     }
-    catch {
-        Write-Host "Failed to create backup directory: $($_.Exception.Message)" -ForegroundColor Red
-        exit 1
+
+    Write-Host "`n=================================" -ForegroundColor Cyan
+    Write-Host "Backup Summary:" -ForegroundColor Cyan
+    Write-Host "  User: $Username"
+    Write-Host "  Destination: $fullBackupPath"
+    Write-Host "  Estimated size: $($estimate.SizeGB) GB"
+    Write-Host "  File count: $($estimate.FileCount)"
+    Write-Host "  Estimated time (USB 3.0): $($estimate.EstimatedTimeUSB3) minutes"
+    Write-Host "  Estimated time (USB 2.0): $($estimate.EstimatedTimeUSB2) minutes"
+    Write-Host "=================================" -ForegroundColor Cyan
+
+    $confirm = Read-Host "`nProceed with backup? (y/N)"
+    if ($confirm -ne 'y' -and $confirm -ne 'Y') {
+        Write-Host "Backup cancelled." -ForegroundColor Yellow
+        Write-Host "`nPress any key to exit..."
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        exit 0
     }
+
+    # Start the backup
+    $startTime = Get-Date
+    try {
+        Start-UserBackup -UserPath $userProfilePath -DestinationPath $fullBackupPath -UserName $Username
+        $endTime = Get-Date
+
+        $duration = $endTime - $startTime
+        Write-Host "`n=================================" -ForegroundColor Green
+        Write-Host "Backup Completed!" -ForegroundColor Green
+        Write-Host "  Duration: $($duration.Hours)h $($duration.Minutes)m $($duration.Seconds)s"
+        Write-Host "  Location: $fullBackupPath"
+        Write-Host "  Log file: $(Join-Path $fullBackupPath 'backup_log.txt')"
+        Write-Host "=================================" -ForegroundColor Green
+    } catch {
+        Handle-Error "Backup operation failed: $($_.Exception.Message)" -Critical $false
+        Write-Host "`nPartial backup may have been created at: $fullBackupPath" -ForegroundColor Yellow
+    }
+
+} catch {
+    # Catch any unhandled errors in the main execution
+    Write-Host "`nUnexpected error occurred:" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host "`nStack trace:" -ForegroundColor Gray
+    Write-Host $_.ScriptStackTrace -ForegroundColor Gray
+} finally {
+    # Always prompt before closing, regardless of success or failure
+    Write-Host "`nPress any key to exit..."
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 }
-
-# Get copy estimate
-$estimate = Get-CopyEstimate -SourcePath $userProfilePath
-
-Write-Host "`n=================================" -ForegroundColor Cyan
-Write-Host "Backup Summary:" -ForegroundColor Cyan
-Write-Host "  User: $Username"
-Write-Host "  Destination: $fullBackupPath"
-Write-Host "  Estimated size: $($estimate.SizeGB) GB"
-Write-Host "  File count: $($estimate.FileCount)"
-Write-Host "  Estimated time (USB 3.0): $($estimate.EstimatedTimeUSB3) minutes"
-Write-Host "  Estimated time (USB 2.0): $($estimate.EstimatedTimeUSB2) minutes"
-Write-Host "=================================" -ForegroundColor Cyan
-
-$confirm = Read-Host "`nProceed with backup? (y/N)"
-if ($confirm -ne 'y' -and $confirm -ne 'Y') {
-    Write-Host "Backup cancelled." -ForegroundColor Yellow
-    exit 0
-}
-
-# Start the backup
-$startTime = Get-Date
-Start-UserBackup -UserPath $userProfilePath -DestinationPath $fullBackupPath -UserName $Username
-$endTime = Get-Date
-
-$duration = $endTime - $startTime
-Write-Host "`n=================================" -ForegroundColor Green
-Write-Host "Backup Completed!" -ForegroundColor Green
-Write-Host "  Duration: $($duration.Hours)h $($duration.Minutes)m $($duration.Seconds)s"
-Write-Host "  Location: $fullBackupPath"
-Write-Host "  Log file: $(Join-Path $fullBackupPath 'backup_log.txt')"
-Write-Host "=================================" -ForegroundColor Green
-
-Write-Host "`nPress any key to exit..."
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
