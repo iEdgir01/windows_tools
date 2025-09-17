@@ -18,6 +18,48 @@ function Show-Header {
     Write-Host ""
 }
 
+# Function to display progress bar at top of terminal
+function Show-ProgressBar {
+    param(
+        [int]$Current,
+        [int]$Total,
+        [string]$Activity,
+        [datetime]$StartTime = (Get-Date),
+        [int]$Width = 50
+    )
+
+    if ($Total -eq 0) { return }
+
+    # Calculate progress percentage
+    $progressPercent = [math]::Min(100, [math]::Round(($Current / $Total) * 100, 1))
+
+    # Calculate ETA
+    $elapsed = (Get-Date) - $StartTime
+    if ($Current -gt 0 -and $progressPercent -lt 100) {
+        $totalEstimated = $elapsed.TotalSeconds * ($Total / $Current)
+        $remaining = [TimeSpan]::FromSeconds($totalEstimated - $elapsed.TotalSeconds)
+        $etaText = "ETA: {0:mm\:ss}" -f $remaining
+    } else {
+        $etaText = "ETA: --:--"
+    }
+
+    # Create progress bar
+    $completed = [math]::Floor($Width * ($Current / $Total))
+    $remaining = $Width - $completed
+    $progressBar = "[" + ("=" * $completed) + (">" * [math]::Min(1, $remaining)) + (" " * [math]::Max(0, $remaining - 1)) + "]"
+
+    # Save cursor position, move to top, display progress, restore position
+    $currentPos = $Host.UI.RawUI.CursorPosition
+    $Host.UI.RawUI.CursorPosition = @{X=0; Y=0}
+
+    # Clear the line and display progress
+    $progressText = "$progressBar $progressPercent% - $Activity ($Current/$Total) - $etaText"
+    Write-Host $progressText.PadRight($Host.UI.RawUI.BufferSize.Width - 1) -BackgroundColor DarkGreen -ForegroundColor White
+
+    # Restore cursor position
+    $Host.UI.RawUI.CursorPosition = $currentPos
+}
+
 # Function to get available users for restore target
 function Select-TargetUser {
     Write-Host "Select target user to restore to:" -ForegroundColor Yellow
@@ -246,7 +288,17 @@ function Start-UserRestore {
         Write-Host "Operation: Merging $($BackupSources.Count) backups" -ForegroundColor Yellow
     }
     Write-Host ""
+    Write-Host "" # Reserve space for progress bar
 
+    # Calculate total folders across all backups
+    $totalFolders = 0
+    foreach ($backupSource in $BackupSources) {
+        $folders = Get-ChildItem $backupSource.FullName -Directory -ErrorAction SilentlyContinue
+        $totalFolders += $folders.Count
+    }
+
+    $currentFolderNum = 0
+    $startTime = Get-Date
     $totalBackups = $BackupSources.Count
     $currentBackup = 0
 
@@ -258,8 +310,12 @@ function Start-UserRestore {
         $backupFolders = Get-ChildItem $backupSource.FullName -Directory
 
         foreach ($folder in $backupFolders) {
+            $currentFolderNum++
             $folderName = $folder.Name
-            Write-Host "  Restoring $folderName..." -ForegroundColor White
+
+            # Update progress bar
+            Show-ProgressBar -Current $currentFolderNum -Total $totalFolders -Activity "Restoring $folderName" -StartTime $startTime
+            # Progress info displayed in progress bar, no need for separate message
 
             # Determine target path based on folder type
             if ($folderName.StartsWith("OneDrive_")) {
@@ -281,19 +337,21 @@ function Start-UserRestore {
                 }
             }
 
-            # Robocopy for restore
+            # Robocopy for restore with hidden output for clean progress display
             $robocopyArgs = @(
                 "`"$($folder.FullName)`"",
                 "`"$targetPath`"",
                 "/E",          # Copy subdirectories including empty ones
                 "/COPY:DAT",   # Copy Data, Attributes, and Timestamps
                 "/DCOPY:DAT",  # Copy directory Data, Attributes, and Timestamps
-                "/R:3",        # Retry 3 times on failed copies
-                "/W:10",       # Wait 10 seconds between retries
+                "/R:5",        # Retry 5 times on failed copies (increased for reliability)
+                "/W:30",       # Wait 30 seconds between retries (increased)
                 "/MT:8",       # Multi-threaded copying (8 threads for restore)
                 "/LOG+:`"$logFile`"",  # Append to log file
-                "/TEE",        # Output to console and log
-                "/NP"          # No progress percentage (reduces overhead)
+                "/NFL",        # No file list (for clean progress display)
+                "/NDL",        # No directory list (for clean progress display)
+                "/NP",         # No progress percentage (reduces overhead)
+                "/SKIP:SL"     # Skip symbolic links (can cause issues)
             )
 
             # Configure merge behavior for file conflicts
@@ -477,17 +535,24 @@ function Start-UserRestore {
                 }
             }
 
-            # Start robocopy process
-            $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -NoNewWindow -PassThru -Wait
+            # Start robocopy process with hidden output
+            $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -PassThru -Wait -WindowStyle Hidden
 
-            # Check exit codes (0-3 are success, 4+ indicate issues)
-            if ($process.ExitCode -le 3) {
-                Write-Host "    ✓ $folderName completed successfully" -ForegroundColor Green
-            } elseif ($process.ExitCode -le 7) {
-                Write-Host "    ⚠ $folderName completed with warnings (Exit code: $($process.ExitCode))" -ForegroundColor Yellow
-            } else {
-                Write-Host "    ✗ $folderName failed (Exit code: $($process.ExitCode))" -ForegroundColor Red
+            # Enhanced status message with specific error interpretation
+            $statusMsg = switch ($process.ExitCode) {
+                0 { "OK $folderName - No files copied (already up to date)" }
+                1 { "OK $folderName - Files copied successfully" }
+                2 { "OK $folderName - Extra files or directories detected and copied" }
+                3 { "OK $folderName - Files copied with mismatches resolved" }
+                4 { "WARN $folderName - Some mismatched files/dirs (Exit code: 4)" }
+                5 { "WARN $folderName - Some files copied, some mismatches (Exit code: 5)" }
+                6 { "WARN $folderName - Extra files and mismatches (Exit code: 6)" }
+                7 { "WARN $folderName - Files copied, extra files, and mismatches (Exit code: 7)" }
+                8 { "ERROR $folderName - Some files or directories could not be copied (permissions/locks)" }
+                16 { "ERROR $folderName - Serious error, robocopy did not copy any files" }
+                default { "ERROR $folderName - Unknown error (Exit code: $($process.ExitCode))" }
             }
+            Write-Host $statusMsg.PadRight(80) -ForegroundColor $(if ($process.ExitCode -le 3) { "Green" } elseif ($process.ExitCode -le 7) { "Yellow" } else { "Red" })
         }
     }
 }
