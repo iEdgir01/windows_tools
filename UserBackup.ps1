@@ -45,6 +45,142 @@ function Write-Log {
     Add-Content $global:SessionLog $entry
 }
 
+# Function to display progress bar
+function Show-ProgressBar {
+    param(
+        [int]$Current,
+        [int]$Total,
+        [string]$Activity,
+        [datetime]$StartTime = (Get-Date),
+        [int]$Width = 50
+    )
+
+    if ($Total -eq 0) { $Total = 1 }
+    $percentage = [math]::Round(($Current / $Total) * 100, 1)
+    $completed = [math]::Round(($Current / $Total) * $Width)
+    $remaining = $Width - $completed
+
+    # Calculate time estimates
+    $elapsed = (Get-Date) - $StartTime
+    if ($Current -gt 0) {
+        $avgTimePerItem = $elapsed.TotalSeconds / $Current
+        $remainingItems = $Total - $Current
+        $estimatedRemaining = [timespan]::FromSeconds($avgTimePerItem * $remainingItems)
+        $remainingText = if ($estimatedRemaining.TotalHours -ge 1) {
+            "{0:h\h\ m\m}" -f $estimatedRemaining
+        } else {
+            "{0:m\m\ s\s}" -f $estimatedRemaining
+        }
+    } else {
+        $remainingText = "Calculating..."
+    }
+
+    # Save cursor position and move to top
+    $currentPos = $Host.UI.RawUI.CursorPosition
+    $Host.UI.RawUI.CursorPosition = @{X=0; Y=0}
+
+    # Create progress bar
+    $progressBar = "[${"#" * $completed}${"." * $remaining}]"
+    $statusLine = "$Activity - $percentage% ($Current/$Total) - ETA: $remainingText"
+
+    # Display with padding to clear previous text
+    $maxWidth = [math]::Max($progressBar.Length, $statusLine.Length) + 10
+    Write-Host $progressBar.PadRight($maxWidth) -ForegroundColor Green
+    Write-Host $statusLine.PadRight($maxWidth) -ForegroundColor Cyan
+    Write-Host "".PadRight($maxWidth) -ForegroundColor Black
+
+    # Restore cursor position
+    $Host.UI.RawUI.CursorPosition = $currentPos
+}
+
+# Function to save progress to log
+function Save-ProgressToLog {
+    param(
+        [string]$LogPath,
+        [int]$CurrentFolder,
+        [int]$TotalFolders,
+        [int]$CurrentFile,
+        [int]$TotalFiles,
+        [string]$CurrentFolderName
+    )
+
+    $progressData = @{
+        Timestamp = Get-Date
+        CurrentFolder = $CurrentFolder
+        TotalFolders = $TotalFolders
+        CurrentFile = $CurrentFile
+        TotalFiles = $TotalFiles
+        CurrentFolderName = $CurrentFolderName
+        PercentComplete = [math]::Round(($CurrentFolder / $TotalFolders) * 100, 1)
+    }
+
+    $progressJson = $progressData | ConvertTo-Json -Compress
+    Add-Content $LogPath "`nPROGRESS_MARKER: $progressJson"
+}
+
+# Function to load progress from log
+function Get-ProgressFromLog {
+    param([string]$LogPath)
+
+    if (-not (Test-Path $LogPath)) {
+        return $null
+    }
+
+    try {
+        $logContent = Get-Content $LogPath
+        $lastProgressLine = $logContent | Where-Object { $_ -match "^PROGRESS_MARKER: " } | Select-Object -Last 1
+
+        if ($lastProgressLine) {
+            $progressJson = $lastProgressLine -replace "^PROGRESS_MARKER: ", ""
+            $progress = $progressJson | ConvertFrom-Json
+            return $progress
+        }
+
+        return $null
+    }
+    catch {
+        Write-Log "Warning: Could not parse progress from log: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+# Function to calculate total files for progress tracking
+function Get-TotalFileCount {
+    param(
+        [string]$UserPath,
+        [array]$FoldersToProcess,
+        [array]$OneDriveFoldersToProcess
+    )
+
+    $totalFiles = 0
+    Write-Host "Calculating total files for progress tracking..." -ForegroundColor Gray
+
+    foreach ($folder in $FoldersToProcess) {
+        $folderPath = Join-Path $UserPath $folder
+        if (Test-Path $folderPath) {
+            try {
+                $fileCount = (Get-ChildItem $folderPath -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ne ".pst" }).Count
+                $totalFiles += $fileCount
+            } catch {
+                # Skip folders with access issues
+            }
+        }
+    }
+
+    foreach ($oneFolder in $OneDriveFoldersToProcess) {
+        if (Test-Path $oneFolder.Source) {
+            try {
+                $fileCount = (Get-ChildItem $oneFolder.Source -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ne ".pst" }).Count
+                $totalFiles += $fileCount
+            } catch {
+                # Skip folders with access issues
+            }
+        }
+    }
+
+    return $totalFiles
+}
+
 # Function to select user and return folder name
 function Select-User {
     Write-Host "Available users:" -ForegroundColor Yellow
@@ -519,72 +655,8 @@ function Start-UserBackup {
 
         $foldersToProcess = $foldersToProcess | Sort-Object | Get-Unique
     }
-    Write-Host ""
 
-    $totalFolders = $foldersToProcess.Count
-    $currentFolder = 0
-
-    foreach ($folder in $foldersToProcess) {
-        $currentFolder++
-        $sourcePath = Join-Path $UserPath $folder
-        $destPath = Join-Path $DestinationPath $folder
-
-        if (Test-Path $sourcePath) {
-            Write-Host "[$currentFolder/$totalFolders] Copying $folder..." -ForegroundColor Cyan
-
-            # Build exclude list for exact file resume
-            $excludeFiles = @()
-            if ($BackupAnalysis -and $BackupAnalysis.CopiedFiles) {
-                if ($BackupAnalysis.CopiedFiles.ContainsKey($folder)) {
-                    $excludeFiles = $BackupAnalysis.CopiedFiles[$folder]
-                    Write-Host "  Excluding $($excludeFiles.Count) already copied files" -ForegroundColor Gray
-                } else {
-                    Write-Host "  No previous files found for $folder (starting fresh)" -ForegroundColor Gray
-                }
-            }
-
-            # Build robocopy arguments
-            $robocopyArgs = @(
-                "`"$sourcePath`"",
-                "`"$destPath`"",
-                "/MIR",        # Mirror directory
-                "/COPY:DAT",   # Copy data, attributes, and timestamps
-                "/DCOPY:DAT",  # Copy directory attributes and timestamps
-                "/XF", "*.pst", # Exclude PST files
-                "/R:3",        # Retry 3 times
-                "/W:10",       # Wait 10 seconds between retries
-                "/MT:16",      # Multi-threaded copying
-                "/LOG+:`"$logFile`"",  # Append to log file
-                "/TEE",        # Output to console and log
-                "/NP"          # No progress percentage
-            )
-
-            # Add exclude files for exact resume
-            foreach ($excludeFile in $excludeFiles) {
-                $robocopyArgs += "/XF"
-                $robocopyArgs += "`"$excludeFile`""
-            }
-
-            # Start robocopy process
-            $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -NoNewWindow -PassThru -Wait
-
-            # Handle robocopy exit codes
-            if ($process.ExitCode -le 3) {
-                Write-Host "  ✓ $folder completed successfully" -ForegroundColor Green
-            } elseif ($process.ExitCode -le 7) {
-                Write-Host "  ⚠ $folder completed with warnings (Exit code: $($process.ExitCode))" -ForegroundColor Yellow
-            } else {
-                Write-Host "  ✗ $folder failed (Exit code: $($process.ExitCode))" -ForegroundColor Red
-            }
-        } else {
-            Write-Host "[$currentFolder/$totalFolders] Skipping $folder (not found)" -ForegroundColor Gray
-        }
-    }
-
-    # Backup OneDrive folders
-    Write-Host "`nBacking up OneDrive folders..." -ForegroundColor Yellow
-
-    # Determine which OneDrive folders to process
+    # Determine OneDrive folders to process
     $oneDriveFoldersToProcess = $oneDriveFolders
     if ($BackupAnalysis) {
         $oneDriveFoldersToProcess = @()
@@ -609,17 +681,114 @@ function Start-UserBackup {
             }
         }
 
-        # Remove duplicates
         $oneDriveFoldersToProcess = $oneDriveFoldersToProcess | Sort-Object -Property Dest -Unique
     }
 
-    $totalOneDrive = $oneDriveFoldersToProcess.Count
-    $currentOneDrive = 0
+    # Calculate total files for progress tracking
+    $totalFiles = Get-TotalFileCount -UserPath $UserPath -FoldersToProcess $foldersToProcess -OneDriveFoldersToProcess $oneDriveFoldersToProcess
+
+    # Check for saved progress
+    $savedProgress = Get-ProgressFromLog -LogPath $logFile
+    $startTime = Get-Date
+    $currentFileCount = 0
+
+    if ($savedProgress) {
+        Write-Host "Resuming from saved progress: $($savedProgress.PercentComplete)% complete" -ForegroundColor Green
+        $currentFileCount = $savedProgress.CurrentFile
+    }
+
+    # Clear screen and setup progress display
+    Clear-Host
+    Write-Host "`n`n`n" # Space for progress bar
+    Write-Host "Backup Progress for $UserName" -ForegroundColor Cyan
+    Write-Host "Destination: $DestinationPath" -ForegroundColor Gray
+    Write-Host ""
+
+    $totalFolders = $foldersToProcess.Count + $oneDriveFoldersToProcess.Count
+    $currentFolder = if ($savedProgress) { $savedProgress.CurrentFolder } else { 0 }
+
+    foreach ($folder in $foldersToProcess) {
+        $currentFolder++
+        $sourcePath = Join-Path $UserPath $folder
+        $destPath = Join-Path $DestinationPath $folder
+
+        if (Test-Path $sourcePath) {
+            # Update progress bar
+            Show-ProgressBar -Current $currentFolder -Total $totalFolders -Activity "Copying $folder" -StartTime $startTime
+
+            # Build exclude list for exact file resume
+            $excludeFiles = @()
+            if ($BackupAnalysis -and $BackupAnalysis.CopiedFiles) {
+                if ($BackupAnalysis.CopiedFiles.ContainsKey($folder)) {
+                    $excludeFiles = $BackupAnalysis.CopiedFiles[$folder]
+                }
+            }
+
+            # Build robocopy arguments (hide output to prevent flooding)
+            $robocopyArgs = @(
+                "`"$sourcePath`"",
+                "`"$destPath`"",
+                "/MIR",        # Mirror directory
+                "/COPY:DAT",   # Copy data, attributes, and timestamps
+                "/DCOPY:DAT",  # Copy directory attributes and timestamps
+                "/XF", "*.pst", # Exclude PST files
+                "/R:3",        # Retry 3 times
+                "/W:10",       # Wait 10 seconds between retries
+                "/MT:16",      # Multi-threaded copying
+                "/LOG+:`"$logFile`"",  # Append to log file
+                "/NFL",        # No file list
+                "/NDL",        # No directory list
+                "/NP"          # No progress percentage
+            )
+
+            # Add exclude files for exact resume
+            foreach ($excludeFile in $excludeFiles) {
+                $robocopyArgs += "/XF"
+                $robocopyArgs += "`"$excludeFile`""
+            }
+
+            # Save progress before starting folder
+            Save-ProgressToLog -LogPath $logFile -CurrentFolder $currentFolder -TotalFolders $totalFolders -CurrentFile $currentFileCount -TotalFiles $totalFiles -CurrentFolderName $folder
+
+            # Start robocopy process (hidden output)
+            $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -NoNewWindow -PassThru -Wait -WindowStyle Hidden
+
+            # Update file count estimate (rough)
+            if (Test-Path $sourcePath) {
+                try {
+                    $folderFileCount = (Get-ChildItem $sourcePath -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ne ".pst" }).Count
+                    $currentFileCount += $folderFileCount
+                } catch {
+                    # Estimate if count fails
+                    $currentFileCount += 100
+                }
+            }
+
+            # Save final progress for this folder
+            Save-ProgressToLog -LogPath $logFile -CurrentFolder $currentFolder -TotalFolders $totalFolders -CurrentFile $currentFileCount -TotalFiles $totalFiles -CurrentFolderName $folder
+
+            # Status message below progress bar
+            $statusMsg = if ($process.ExitCode -le 3) {
+                "OK $folder completed successfully"
+            } elseif ($process.ExitCode -le 7) {
+                "WARN $folder completed with warnings (Exit code: $($process.ExitCode))"
+            } else {
+                "ERROR $folder failed (Exit code: $($process.ExitCode))"
+            }
+            Write-Host $statusMsg.PadRight(80) -ForegroundColor $(if ($process.ExitCode -le 3) { "Green" } elseif ($process.ExitCode -le 7) { "Yellow" } else { "Red" })
+        } else {
+            Write-Host "Skipping $folder (not found)".PadRight(80) -ForegroundColor Gray
+        }
+    }
+
+    # Process OneDrive folders (already determined above)
 
     foreach ($oneFolder in $oneDriveFoldersToProcess) {
-        $currentOneDrive++
+        $currentFolder++
         if (Test-Path $oneFolder.Source) {
-            Write-Host "[$currentOneDrive/$totalOneDrive] Copying $($oneFolder.Dest)..." -ForegroundColor Cyan
+            # Update progress bar
+            Show-ProgressBar -Current $currentFolder -Total $totalFolders -Activity "Copying $($oneFolder.Dest)" -StartTime $startTime
+
             $destPath = Join-Path $DestinationPath $oneFolder.Dest
 
             # Build exclude list for exact file resume
@@ -627,13 +796,10 @@ function Start-UserBackup {
             if ($BackupAnalysis -and $BackupAnalysis.CopiedFiles) {
                 if ($BackupAnalysis.CopiedFiles.ContainsKey($oneFolder.Dest)) {
                     $excludeFiles = $BackupAnalysis.CopiedFiles[$oneFolder.Dest]
-                    Write-Host "  Excluding $($excludeFiles.Count) already copied files" -ForegroundColor Gray
-                } else {
-                    Write-Host "  No previous files found for $($oneFolder.Dest) (starting fresh)" -ForegroundColor Gray
                 }
             }
 
-            # Build robocopy arguments
+            # Build robocopy arguments (hide output)
             $robocopyArgs = @(
                 "`"$($oneFolder.Source)`"",
                 "`"$destPath`"",
@@ -645,7 +811,8 @@ function Start-UserBackup {
                 "/W:10",       # Wait 10 seconds between retries
                 "/MT:16",      # Multi-threaded copying
                 "/LOG+:`"$logFile`"",  # Append to log file
-                "/TEE",        # Output to console and log
+                "/NFL",        # No file list
+                "/NDL",        # No directory list
                 "/NP"          # No progress percentage
             )
 
@@ -655,19 +822,36 @@ function Start-UserBackup {
                 $robocopyArgs += "`"$excludeFile`""
             }
 
-            # Start robocopy process
-            $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -NoNewWindow -PassThru -Wait
+            # Save progress before starting folder
+            Save-ProgressToLog -LogPath $logFile -CurrentFolder $currentFolder -TotalFolders $totalFolders -CurrentFile $currentFileCount -TotalFiles $totalFiles -CurrentFolderName $oneFolder.Dest
 
-            # Handle robocopy exit codes
-            if ($process.ExitCode -le 3) {
-                Write-Host "  ✓ $($oneFolder.Dest) completed successfully" -ForegroundColor Green
-            } elseif ($process.ExitCode -le 7) {
-                Write-Host "  ⚠ $($oneFolder.Dest) completed with warnings (Exit code: $($process.ExitCode))" -ForegroundColor Yellow
-            } else {
-                Write-Host "  ✗ $($oneFolder.Dest) failed (Exit code: $($process.ExitCode))" -ForegroundColor Red
+            # Start robocopy process (hidden output)
+            $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -NoNewWindow -PassThru -Wait -WindowStyle Hidden
+
+            # Update file count estimate
+            if (Test-Path $oneFolder.Source) {
+                try {
+                    $folderFileCount = (Get-ChildItem $oneFolder.Source -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ne ".pst" }).Count
+                    $currentFileCount += $folderFileCount
+                } catch {
+                    $currentFileCount += 100
+                }
             }
+
+            # Save final progress for this folder
+            Save-ProgressToLog -LogPath $logFile -CurrentFolder $currentFolder -TotalFolders $totalFolders -CurrentFile $currentFileCount -TotalFiles $totalFiles -CurrentFolderName $oneFolder.Dest
+
+            # Status message below progress bar
+            $statusMsg = if ($process.ExitCode -le 3) {
+                "OK $($oneFolder.Dest) completed successfully"
+            } elseif ($process.ExitCode -le 7) {
+                "WARN $($oneFolder.Dest) completed with warnings (Exit code: $($process.ExitCode))"
+            } else {
+                "ERROR $($oneFolder.Dest) failed (Exit code: $($process.ExitCode))"
+            }
+            Write-Host $statusMsg.PadRight(80) -ForegroundColor $(if ($process.ExitCode -le 3) { "Green" } elseif ($process.ExitCode -le 7) { "Yellow" } else { "Red" })
         } else {
-            Write-Host "[$currentOneDrive/$totalOneDrive] Skipping $($oneFolder.Dest) (not found)" -ForegroundColor Gray
+            Write-Host "Skipping $($oneFolder.Dest) (not found)".PadRight(80) -ForegroundColor Gray
         }
     }
 }
