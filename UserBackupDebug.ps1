@@ -1,5 +1,5 @@
-# UserBackup.ps1 - Fast User Data Backup Script
-# Execute remotely with: iwr -useb "your-url/UserBackup.ps1" | iex
+# UserBackupDebug.ps1 - Fast User Data Backup Script with Debug Output
+# Execute remotely with: iwr -useb "your-url/UserBackupDebug.ps1" | iex
 
 param(
     [string]$Username,
@@ -7,26 +7,78 @@ param(
     [string]$BackupFolder
 )
 
+# Debug is always enabled in this version
+$Debug = $true
+
+# Function to open debug console
+function Start-DebugConsole {
+    $debugScript = @'
+$Host.UI.RawUI.WindowTitle = "Backup Script Debug Output"
+Write-Host "=== DEBUG CONSOLE ===" -ForegroundColor Green
+Write-Host "Monitoring backup script execution..." -ForegroundColor Yellow
+Write-Host "Log file: $env:TEMP\backup_debug.log" -ForegroundColor Gray
+Write-Host ""
+
+$lastSize = 0
+while ($true) {
+    if (Test-Path "$env:TEMP\backup_debug.log") {
+        $currentSize = (Get-Item "$env:TEMP\backup_debug.log").Length
+        if ($currentSize -gt $lastSize) {
+            $content = Get-Content "$env:TEMP\backup_debug.log" -Tail 50
+            Clear-Host
+            Write-Host "=== DEBUG CONSOLE ===" -ForegroundColor Green
+            Write-Host "Log file: $env:TEMP\backup_debug.log" -ForegroundColor Gray
+            Write-Host ""
+            $content | ForEach-Object { Write-Host $_ -ForegroundColor White }
+            $lastSize = $currentSize
+        }
+    }
+    Start-Sleep -Milliseconds 500
+}
+'@
+
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", $debugScript
+    Start-Sleep -Seconds 2
+}
+
+# Function to write debug output
+function Write-Debug {
+    param([string]$Message)
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    try {
+        Add-Content -Path "$env:TEMP\backup_debug.log" -Value "[$timestamp] $Message" -ErrorAction SilentlyContinue
+    } catch {}
+}
 
 # Function to display header
 function Show-Header {
     Clear-Host
     Write-Host "=================================" -ForegroundColor Cyan
     Write-Host "   Windows User Backup Tool" -ForegroundColor Cyan
+    Write-Host "      (DEBUG MODE ENABLED)" -ForegroundColor Red
     Write-Host "=================================" -ForegroundColor Cyan
     Write-Host ""
 }
 
 # Function to get available users
 function Get-AvailableUsers {
+    Write-Debug "Starting Get-AvailableUsers function"
     $userFolders = Get-ChildItem "C:\Users" | Where-Object {
         $_.PSIsContainer -and
         $_.Name -notin @("Public", "Default", "Default User", "All Users")
     }
 
+    Write-Debug "Found $($userFolders.Count) user folders"
+
     $users = @()
     foreach ($folder in $userFolders) {
+        Write-Debug "Processing folder: '$($folder.Name)' (Type: $($folder.Name.GetType().Name)) (Length: $($folder.Name.Length))"
         $users += $folder.Name
+    }
+
+    Write-Debug "Final users array count: $($users.Count)"
+    for ($i = 0; $i -lt $users.Count; $i++) {
+        Write-Debug "User[$i]: '$($users[$i])' (Type: $($users[$i].GetType().Name)) (Length: $($users[$i].Length))"
     }
 
     return $users
@@ -157,6 +209,9 @@ function Start-UserBackup {
 }
 
 # Main script execution
+Start-DebugConsole
+Remove-Item "$env:TEMP\backup_debug.log" -ErrorAction SilentlyContinue
+Write-Debug "=== BACKUP SCRIPT STARTED WITH DEBUG ==="
 Show-Header
 
 # Get username if not provided
@@ -168,11 +223,14 @@ if (-not $Username) {
         exit 1
     }
 
+    Write-Debug "About to display users. Array count: $($users.Count)"
     Write-Host "Available users:" -ForegroundColor Yellow
     for ($i = 0; $i -lt $users.Count; $i++) {
         $userNum = $i + 1
         $userName = $users[$i].ToString()
-        Write-Host "  $userNum. $userName"
+        Write-Debug "Displaying user[$i]: '$userName' as number $userNum"
+        Write-Host "  $userNum. $userName" -NoNewline
+        Write-Host ""
     }
 
     do {

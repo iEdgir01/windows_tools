@@ -14,50 +14,39 @@ A PowerShell script for fast, reliable user data backup using Robocopy with reco
 
 ## Remote Execution
 
-To execute without downloading the script first:
+### Normal Mode (Recommended)
 
 ```cmd
 powershell -Command "iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windows_tools/main/UserBackup.ps1' | iex"
 ```
 
-Or from PowerShell:
-
-```powershell
-iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windows_tools/main/UserBackup.ps1' | iex
-```
-
-### Debug Mode
-
-To run with debug output in a separate console window:
+### Debug Mode (For Troubleshooting)
 
 ```cmd
-powershell -Command "(iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windows_tools/main/UserBackup.ps1').Content | powershell -Command '& { param($Debug=$true) ' + $input + ' }'"
+powershell -Command "iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windows_tools/main/UserBackupDebug.ps1' | iex"
 ```
 
-Or simpler approach - download and run with debug:
-
-```powershell
-iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windows_tools/main/UserBackup.ps1' -OutFile 'backup.ps1'; .\backup.ps1 -Debug; Remove-Item 'backup.ps1'
-```
+The debug version opens a separate console window with detailed logging to help troubleshoot any issues.
 
 ## Local Execution
 
+### Normal Version
 ```powershell
 .\UserBackup.ps1
 ```
 
+### Debug Version
+```powershell
+.\UserBackupDebug.ps1
+```
+
 ## Parameters (Optional)
 
-You can skip prompts by providing parameters:
+You can skip prompts by providing parameters to either version:
 
 ```powershell
 .\UserBackup.ps1 -Username "JohnDoe" -BackupLocation "E:" -BackupFolder "Backup_2024"
-```
-
-Enable debug mode:
-
-```powershell
-.\UserBackup.ps1 -Debug
+.\UserBackupDebug.ps1 -Username "JohnDoe" -BackupLocation "E:" -BackupFolder "Backup_2024"
 ```
 
 ## What Gets Backed Up
