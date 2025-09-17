@@ -8,19 +8,12 @@ PowerShell scripts for fast, reliable user data backup and restore using Robocop
 - **Interactive prompts** for user selection, storage device, and backup folder
 - **Smart filtering** - backs up user data including OneDrive synced folders
 - **PST exclusion** - automatically excludes large Outlook PST files
-- **Recovery features** - handles USB disconnects, retries failed copies
-- **Progress tracking** - shows current folder being copied and completion status
+- **Resume functionality** - continues interrupted backups with exact file-level tracking
+- **Progress tracking** - visual progress bar with ETA and real-time status
 - **Time estimation** - calculates estimated backup time based on data size
-- **Multi-threaded copying** - uses Robocopy with 16 threads for maximum speed
-- **Detailed logging** - creates backup_log.txt with full operation details
-
-### Multi-Device Backup Tool (UserBackupMulti.ps1)
-- **Multiple user selection** - backup multiple users in one operation
-- **Multi-device support** - backup to multiple destinations simultaneously
-- **Smart folder naming** - avoids conflicts when merging multiple users
-- **Cross-device redundancy** - same backup copied to multiple devices
-- **Batch processing** - efficient handling of large multi-user environments
-- **Comprehensive progress tracking** - shows per-user and per-device progress
+- **Multi-threaded copying** - uses Robocopy with optimized thread count for reliability
+- **Detailed logging** - creates backup_log.txt with full operation details and progress markers
+- **Enhanced error handling** - detailed exit code interpretation and retry logic
 
 ### Restore Tool (UserRestore.ps1)
 - **Target user selection** - choose which user to restore data to
@@ -29,28 +22,16 @@ PowerShell scripts for fast, reliable user data backup and restore using Robocop
 - **Merge functionality** - combine multiple backups into one user account
 - **Smart folder mapping** - correctly maps OneDrive folders back to OneDrive locations
 - **Size estimation** - calculates restore size and time before starting
-- **Progress tracking** - real-time status updates during restore process
+- **Progress tracking** - visual progress bar with ETA and real-time status
+- **Enhanced conflict resolution** - detailed file comparison with smart merging options
 
 ## Remote Execution
 
-### Backup Scripts
+### Backup Script
 
-**Single User Backup (Recommended)**
 ```cmd
 powershell -Command "iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windows_tools/main/UserBackup.ps1' | iex"
 ```
-
-**Multi-User/Multi-Device Backup**
-```cmd
-powershell -Command "iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windows_tools/main/UserBackupMulti.ps1' | iex"
-```
-
-**Debug Mode (For Troubleshooting)**
-```cmd
-powershell -Command "iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windows_tools/main/UserBackupDebug.ps1' | iex"
-```
-
-The debug version opens a separate console window with detailed logging to help troubleshoot any issues.
 
 ### Restore Script
 
@@ -60,11 +41,9 @@ powershell -Command "iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windo
 
 ## Local Execution
 
-### Backup Scripts
+### Backup Script
 ```powershell
-.\UserBackup.ps1          # Single user backup
-.\UserBackupMulti.ps1     # Multi-user/multi-device backup
-.\UserBackupDebug.ps1     # Debug backup with detailed logging
+.\UserBackup.ps1          # User backup with resume functionality
 ```
 
 ### Restore Script
@@ -74,18 +53,12 @@ powershell -Command "iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windo
 
 ## Parameters (Optional)
 
-### Backup Scripts
+### Backup Script
 You can skip prompts by providing parameters:
 
 ```powershell
-# Single user backup
+# User backup
 .\UserBackup.ps1 -Username "JohnDoe" -BackupLocation "E:" -BackupFolder "Backup_2024"
-
-# Multi-user backup
-.\UserBackupMulti.ps1 -Usernames @("JohnDoe", "JaneSmith") -BackupLocation "E:" -BackupFolder "MultiBackup_2024"
-
-# Debug backup
-.\UserBackupDebug.ps1 -Username "JohnDoe" -BackupLocation "E:" -BackupFolder "Backup_2024"
 ```
 
 ### Restore Script
@@ -135,14 +108,18 @@ You can skip prompts by providing parameters:
 - `/MIR` - Mirror directory (complete copy, creates dirs, deletes extras)
 - `/COPY:DAT` - Copy data, attributes, and timestamps
 - `/XF *.pst` - Exclude PST files
-- `/MT:16` - Multi-threaded copying (16 threads for backup)
-- `/R:3` - Retry failed copies 3 times
-- `/W:10` - Wait 10 seconds between retries
+- `/MT:8` - Multi-threaded copying (8 threads for stability)
+- `/R:5` - Retry failed copies 5 times
+- `/W:30` - Wait 30 seconds between retries
+- `/SKIP:SL` - Skip symbolic links to avoid issues
 
 ### Restore Operations
 - `/E` - Copy subdirectories including empty ones
 - `/COPY:DAT` - Copy data, attributes, and timestamps
 - `/MT:8` - Multi-threaded copying (8 threads for restore)
+- `/R:5` - Retry failed copies 5 times
+- `/W:30` - Wait 30 seconds between retries
+- `/SKIP:SL` - Skip symbolic links to avoid issues
 - `/IS` - Include Same files (used in merge operations for consistency)
 - `/IT` - Include Tweaked files (used in merge operations for overwrites)
 - Smart merge handling with explicit conflict resolution
@@ -202,36 +179,24 @@ Conflict: Documents\ProjectPlan.docx
 - **Smart newer detection** - Automatically identifies which file is more recent
 - **Abort option** - Stop if conflicts are too complex to resolve
 
-## Multi-Device Backup Workflow
+## Resume Functionality
 
-The `UserBackupMulti.ps1` script provides advanced backup scenarios:
+The backup script includes advanced resume capabilities:
 
-### **Multiple Users to Single Device**
-- Select multiple users (e.g., John, Mary, Bob)
-- Backup all to one USB drive
-- Folders named with username suffix: `Desktop_John`, `Desktop_Mary`, etc.
-- No conflicts - each user's data is separated
+### **Automatic Resume Detection**
+- Detects incomplete backups on startup
+- Analyzes existing log files to determine progress
+- Offers to continue from where backup was interrupted
 
-### **Single User to Multiple Devices**
-- Select one user (e.g., John)
-- Backup to multiple USB drives simultaneously
-- Creates identical backups on each device
-- Perfect for redundancy and backup distribution
+### **Exact File-Level Resume**
+- Tracks individual files copied for each folder
+- Creates dynamic exclusion lists for already-copied files
+- Avoids redundant file copying during resume operations
 
-### **Multiple Users to Multiple Devices**
-- Select multiple users AND multiple devices
-- Every user backed up to every device
-- Maximum redundancy - complete backup on each device
-- Ideal for environments with multiple backup needs
-
-### **Smart Folder Naming**
-When backing up multiple users, folders automatically get username suffixes:
-```
-SingleUser:     Desktop/, Documents/, Pictures/
-MultiUser:      Desktop_John/, Desktop_Mary/, Documents_John/, Documents_Mary/
-```
-
-This prevents conflicts and makes it easy to identify whose files are whose during restore operations.
+### **Progress Preservation**
+- Saves progress markers to log files in JSON format
+- Maintains accurate progress tracking across resume sessions
+- Displays clear status of missing vs incomplete folders
 
 ## Requirements
 
