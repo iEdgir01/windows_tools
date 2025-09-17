@@ -18,10 +18,16 @@ function Show-Header {
 
 # Function to get available users
 function Get-AvailableUsers {
-    $users = Get-ChildItem "C:\Users" | Where-Object {
+    $userFolders = Get-ChildItem "C:\Users" | Where-Object {
         $_.PSIsContainer -and
         $_.Name -notin @("Public", "Default", "Default User", "All Users")
-    } | Select-Object -ExpandProperty Name
+    }
+
+    $users = @()
+    foreach ($folder in $userFolders) {
+        $users += $folder.Name
+    }
+
     return $users
 }
 
@@ -163,7 +169,9 @@ if (-not $Username) {
 
     Write-Host "Available users:" -ForegroundColor Yellow
     for ($i = 0; $i -lt $users.Count; $i++) {
-        Write-Host "  $($i + 1). $($users[$i])"
+        $userNum = $i + 1
+        $userName = $users[$i]
+        Write-Host "  $userNum. $userName"
     }
 
     do {
