@@ -498,12 +498,22 @@ function Start-UserBackup {
     if ($BackupAnalysis) {
         Write-Host "Resume mode: Processing only missing and incomplete folders" -ForegroundColor Yellow
         $foldersToProcess = @()
-        foreach ($folder in $folders) {
-            $status = $BackupAnalysis.Folders[$folder]
-            if ($status -eq "Missing" -or $status -eq "Incomplete") {
-                $foldersToProcess += $folder
+
+        # Add missing folders
+        foreach ($item in $BackupAnalysis.Missing) {
+            if ($item.Type -eq "Standard" -and $item.Name -in $folders) {
+                $foldersToProcess += $item.Name
             }
         }
+
+        # Add incomplete folders
+        foreach ($item in $BackupAnalysis.Incomplete) {
+            if ($item.Type -eq "Standard" -and $item.Name -in $folders) {
+                $foldersToProcess += $item.Name
+            }
+        }
+
+        $foldersToProcess = $foldersToProcess | Sort-Object | Get-Unique
     }
     Write-Host ""
 
@@ -570,12 +580,29 @@ function Start-UserBackup {
     $oneDriveFoldersToProcess = $oneDriveFolders
     if ($BackupAnalysis) {
         $oneDriveFoldersToProcess = @()
-        foreach ($oneFolder in $oneDriveFolders) {
-            $status = $BackupAnalysis.Folders[$oneFolder.Dest]
-            if ($status -eq "Missing" -or $status -eq "Incomplete") {
-                $oneDriveFoldersToProcess += $oneFolder
+
+        # Add missing OneDrive folders
+        foreach ($item in $BackupAnalysis.Missing) {
+            if ($item.Type -eq "OneDrive") {
+                $matchingFolder = $oneDriveFolders | Where-Object { $_.Dest -eq $item.Name }
+                if ($matchingFolder) {
+                    $oneDriveFoldersToProcess += $matchingFolder
+                }
             }
         }
+
+        # Add incomplete OneDrive folders
+        foreach ($item in $BackupAnalysis.Incomplete) {
+            if ($item.Type -eq "OneDrive") {
+                $matchingFolder = $oneDriveFolders | Where-Object { $_.Dest -eq $item.Name }
+                if ($matchingFolder) {
+                    $oneDriveFoldersToProcess += $matchingFolder
+                }
+            }
+        }
+
+        # Remove duplicates
+        $oneDriveFoldersToProcess = $oneDriveFoldersToProcess | Sort-Object -Property Dest -Unique
     }
 
     $totalOneDrive = $oneDriveFoldersToProcess.Count
