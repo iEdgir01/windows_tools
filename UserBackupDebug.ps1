@@ -264,13 +264,61 @@ if (-not $Username) {
     }
 
     Write-Debug "About to display users. Array count: $($users.Count)"
+
+    # Test different ways to extract and display the username
+    for ($i = 0; $i -lt $users.Count; $i++) {
+        $userNum = $i + 1
+
+        # Test 1: Direct array access
+        $test1 = $users[$i]
+        Write-Debug "Test1 - Direct access users[$i]: '$test1' (Length: $($test1.Length))"
+
+        # Test 2: ToString() method
+        $test2 = $users[$i].ToString()
+        Write-Debug "Test2 - ToString() users[$i]: '$test2' (Length: $($test2.Length))"
+
+        # Test 3: String casting
+        $test3 = [string]$users[$i]
+        Write-Debug "Test3 - String cast users[$i]: '$test3' (Length: $($test3.Length))"
+
+        # Test 4: Variable assignment then access
+        $temp = $users[$i]
+        $test4 = "$temp"
+        Write-Debug "Test4 - Variable then string users[$i]: '$test4' (Length: $($test4.Length))"
+
+        # Test 5: Format operator
+        $test5 = "{0}" -f $users[$i]
+        Write-Debug "Test5 - Format operator users[$i]: '$test5' (Length: $($test5.Length))"
+
+        # Test 6: Out-String
+        $test6 = ($users[$i] | Out-String).Trim()
+        Write-Debug "Test6 - Out-String users[$i]: '$test6' (Length: $($test6.Length))"
+
+        Write-Debug "Array element type: $($users[$i].GetType().FullName)"
+        Write-Debug "Array element chars: $(($users[$i].ToCharArray() | ForEach-Object { '[{0}]' -f $_ }) -join '')"
+    }
+
     Write-Host "Available users:" -ForegroundColor Yellow
     for ($i = 0; $i -lt $users.Count; $i++) {
         $userNum = $i + 1
-        $userName = $users[$i].ToString()
-        Write-Debug "Displaying user[$i]: '$userName' as number $userNum"
-        Write-Host "  $userNum. $userName" -NoNewline
-        Write-Host ""
+
+        # Try the most reliable method found above
+        $userName = [string]$users[$i]
+        Write-Debug "Final display attempt - user[$i]: '$userName' as number $userNum"
+
+        # Try different display methods
+        Write-Debug "Display test 1: Write-Host direct"
+        Write-Host "  $userNum. $userName"
+
+        Write-Debug "Display test 2: Write-Host with -f"
+        Write-Host ("  {0}. {1}" -f $userNum, $userName)
+
+        Write-Debug "Display test 3: Write-Host separate variables"
+        $displayText = "  $userNum. $userName"
+        Write-Host $displayText
+
+        Write-Debug "Display test 4: Write-Output"
+        Write-Output "  $userNum. $userName"
     }
 
     do {
