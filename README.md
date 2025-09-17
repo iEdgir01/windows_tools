@@ -14,6 +14,14 @@ PowerShell scripts for fast, reliable user data backup and restore using Robocop
 - **Multi-threaded copying** - uses Robocopy with 16 threads for maximum speed
 - **Detailed logging** - creates backup_log.txt with full operation details
 
+### Multi-Device Backup Tool (UserBackupMulti.ps1)
+- **Multiple user selection** - backup multiple users in one operation
+- **Multi-device support** - backup to multiple destinations simultaneously
+- **Smart folder naming** - avoids conflicts when merging multiple users
+- **Cross-device redundancy** - same backup copied to multiple devices
+- **Batch processing** - efficient handling of large multi-user environments
+- **Comprehensive progress tracking** - shows per-user and per-device progress
+
 ### Restore Tool (UserRestore.ps1)
 - **Target user selection** - choose which user to restore data to
 - **Backup discovery** - automatically finds backup folders on storage devices
@@ -27,9 +35,14 @@ PowerShell scripts for fast, reliable user data backup and restore using Robocop
 
 ### Backup Scripts
 
-**Normal Mode (Recommended)**
+**Single User Backup (Recommended)**
 ```cmd
 powershell -Command "iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windows_tools/main/UserBackup.ps1' | iex"
+```
+
+**Multi-User/Multi-Device Backup**
+```cmd
+powershell -Command "iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windows_tools/main/UserBackupMulti.ps1' | iex"
 ```
 
 **Debug Mode (For Troubleshooting)**
@@ -49,7 +62,8 @@ powershell -Command "iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windo
 
 ### Backup Scripts
 ```powershell
-.\UserBackup.ps1          # Normal backup
+.\UserBackup.ps1          # Single user backup
+.\UserBackupMulti.ps1     # Multi-user/multi-device backup
 .\UserBackupDebug.ps1     # Debug backup with detailed logging
 ```
 
@@ -64,8 +78,13 @@ powershell -Command "iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windo
 You can skip prompts by providing parameters:
 
 ```powershell
-# Backup scripts
+# Single user backup
 .\UserBackup.ps1 -Username "JohnDoe" -BackupLocation "E:" -BackupFolder "Backup_2024"
+
+# Multi-user backup
+.\UserBackupMulti.ps1 -Usernames @("JohnDoe", "JaneSmith") -BackupLocation "E:" -BackupFolder "MultiBackup_2024"
+
+# Debug backup
 .\UserBackupDebug.ps1 -Username "JohnDoe" -BackupLocation "E:" -BackupFolder "Backup_2024"
 ```
 
@@ -182,6 +201,37 @@ Conflict: Documents\ProjectPlan.docx
 - **Batch decisions** - Apply same choice to multiple conflicts
 - **Smart newer detection** - Automatically identifies which file is more recent
 - **Abort option** - Stop if conflicts are too complex to resolve
+
+## Multi-Device Backup Workflow
+
+The `UserBackupMulti.ps1` script provides advanced backup scenarios:
+
+### **Multiple Users to Single Device**
+- Select multiple users (e.g., John, Mary, Bob)
+- Backup all to one USB drive
+- Folders named with username suffix: `Desktop_John`, `Desktop_Mary`, etc.
+- No conflicts - each user's data is separated
+
+### **Single User to Multiple Devices**
+- Select one user (e.g., John)
+- Backup to multiple USB drives simultaneously
+- Creates identical backups on each device
+- Perfect for redundancy and backup distribution
+
+### **Multiple Users to Multiple Devices**
+- Select multiple users AND multiple devices
+- Every user backed up to every device
+- Maximum redundancy - complete backup on each device
+- Ideal for environments with multiple backup needs
+
+### **Smart Folder Naming**
+When backing up multiple users, folders automatically get username suffixes:
+```
+SingleUser:     Desktop/, Documents/, Pictures/
+MultiUser:      Desktop_John/, Desktop_Mary/, Documents_John/, Documents_Mary/
+```
+
+This prevents conflicts and makes it easy to identify whose files are whose during restore operations.
 
 ## Requirements
 
