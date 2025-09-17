@@ -110,6 +110,87 @@ function Get-ExistingBackups {
     }
 }
 
+# Function to parse robocopy log for completed operations
+function Get-LogBasedProgress {
+    param(
+        [string]$LogPath
+    )
+
+    $completedFolders = @()
+    $failedFolders = @()
+    $currentOperation = $null
+
+    if (-not (Test-Path $LogPath)) {
+        return @{
+            CompletedFolders = @()
+            FailedFolders = @()
+            LastOperation = $null
+            HasLog = $false
+        }
+    }
+
+    try {
+        Write-Host "Parsing backup log for resume information..." -ForegroundColor Gray
+        $logContent = Get-Content $LogPath -ErrorAction Stop
+
+        foreach ($line in $logContent) {
+            # Look for robocopy source paths to identify current operation
+            if ($line -match "^\s*Source\s*:\s*(.+)$") {
+                $sourcePath = $matches[1].Trim()
+                # Extract folder name from source path (Desktop, Documents, etc.)
+                if ($sourcePath -match "\\([^\\]+)$") {
+                    $currentOperation = $matches[1]
+                }
+            }
+            # Look for successful completion indicators
+            elseif ($line -match "^\s*Total\s+Copied\s+Skipped\s+Mismatch\s+FAILED\s+Extras") {
+                # This is the header before summary stats
+                continue
+            }
+            elseif ($line -match "^\s*Dirs\s*:\s*\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+\d+") {
+                # Directory summary line - check for failures
+                $failures = [int]$matches[1]
+                if ($currentOperation) {
+                    if ($failures -eq 0) {
+                        $completedFolders += $currentOperation
+                    } else {
+                        $failedFolders += $currentOperation
+                    }
+                }
+            }
+            elseif ($line -match "^\s*Files\s*:\s*\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+\d+") {
+                # File summary line - additional check for failures
+                $failures = [int]$matches[1]
+                if ($currentOperation -and $failures -gt 0) {
+                    if ($currentOperation -notin $failedFolders) {
+                        $failedFolders += $currentOperation
+                    }
+                }
+            }
+            # Look for error patterns
+            elseif ($line -match "ERROR|FAILED|Access is denied|The system cannot find the path") {
+                if ($currentOperation -and $currentOperation -notin $failedFolders) {
+                    $failedFolders += $currentOperation
+                }
+            }
+        }
+
+        return @{
+            CompletedFolders = $completedFolders | Sort-Object | Get-Unique
+            FailedFolders = $failedFolders | Sort-Object | Get-Unique
+            HasLog = $true
+        }
+    }
+    catch {
+        Write-Host "Warning: Could not parse log file: $($_.Exception.Message)" -ForegroundColor Yellow
+        return @{
+            CompletedFolders = @()
+            FailedFolders = @()
+            HasLog = $false
+        }
+    }
+}
+
 # Function to analyze what's missing from an existing backup
 function Compare-BackupProgress {
     param(
@@ -118,6 +199,14 @@ function Compare-BackupProgress {
     )
 
     Write-Host "Analyzing backup progress..." -ForegroundColor Yellow
+
+    # First check for existing log file for more accurate progress
+    $logPath = Join-Path $BackupPath "backup_log.txt"
+    $logProgress = Get-LogBasedProgress -LogPath $logPath
+
+    if ($logProgress.HasLog) {
+        Write-Host "Found backup log - using for accurate progress analysis" -ForegroundColor Green
+    }
 
     $folders = @("Desktop", "Downloads", "Documents", "Pictures", "Videos", "Music")
     $oneDriveFolders = @(
@@ -138,22 +227,48 @@ function Compare-BackupProgress {
         $destPath = Join-Path $BackupPath $folder
 
         if (Test-Path $sourcePath) {
-            if (-not (Test-Path $destPath)) {
-                $missing += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath}
-            } else {
-                # Check if backup is complete by comparing file counts (simple check)
-                try {
+            # Use log-based analysis if available
+            if ($logProgress.HasLog) {
+                if ($folder -in $logProgress.CompletedFolders) {
+                    # Folder completed successfully according to log
+                    $destCount = if (Test-Path $destPath) { (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count } else { 0 }
+                    $complete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; Files = $destCount}
+                }
+                elseif ($folder -in $logProgress.FailedFolders) {
+                    # Folder failed according to log
+                    $sourceCount = (Get-ChildItem $sourcePath -Recurse -File -ErrorAction SilentlyContinue).Count
+                    $destCount = if (Test-Path $destPath) { (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count } else { 0 }
+                    $incomplete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
+                }
+                elseif (-not (Test-Path $destPath)) {
+                    # Not in log and no destination folder = missing
+                    $missing += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath}
+                }
+                else {
+                    # Exists but not in log = assume incomplete (interrupted)
                     $sourceCount = (Get-ChildItem $sourcePath -Recurse -File -ErrorAction SilentlyContinue).Count
                     $destCount = (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count
+                    $incomplete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
+                }
+            }
+            else {
+                # Fallback to file count comparison when no log available
+                if (-not (Test-Path $destPath)) {
+                    $missing += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath}
+                } else {
+                    try {
+                        $sourceCount = (Get-ChildItem $sourcePath -Recurse -File -ErrorAction SilentlyContinue).Count
+                        $destCount = (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count
 
-                    if ($sourceCount -gt $destCount) {
-                        $incomplete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
-                    } else {
-                        $complete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; Files = $destCount}
+                        if ($sourceCount -gt $destCount) {
+                            $incomplete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
+                        } else {
+                            $complete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; Files = $destCount}
+                        }
+                    } catch {
+                        # If we can't compare, assume incomplete
+                        $incomplete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; SourceFiles = "Unknown"; BackupFiles = "Unknown"}
                     }
-                } catch {
-                    # If we can't compare, assume incomplete
-                    $incomplete += @{Type = "Standard"; Name = $folder; Source = $sourcePath; Dest = $destPath; SourceFiles = "Unknown"; BackupFiles = "Unknown"}
                 }
             }
         }
@@ -164,21 +279,47 @@ function Compare-BackupProgress {
         if (Test-Path $oneFolder.Source) {
             $destPath = Join-Path $BackupPath $oneFolder.Dest
 
-            if (-not (Test-Path $destPath)) {
-                $missing += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath}
-            } else {
-                # Check if backup is complete
-                try {
+            # Use log-based analysis if available
+            if ($logProgress.HasLog) {
+                if ($oneFolder.Dest -in $logProgress.CompletedFolders) {
+                    # OneDrive folder completed successfully according to log
+                    $destCount = if (Test-Path $destPath) { (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count } else { 0 }
+                    $complete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; Files = $destCount}
+                }
+                elseif ($oneFolder.Dest -in $logProgress.FailedFolders) {
+                    # OneDrive folder failed according to log
+                    $sourceCount = (Get-ChildItem $oneFolder.Source -Recurse -File -ErrorAction SilentlyContinue).Count
+                    $destCount = if (Test-Path $destPath) { (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count } else { 0 }
+                    $incomplete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
+                }
+                elseif (-not (Test-Path $destPath)) {
+                    # Not in log and no destination folder = missing
+                    $missing += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath}
+                }
+                else {
+                    # Exists but not in log = assume incomplete (interrupted)
                     $sourceCount = (Get-ChildItem $oneFolder.Source -Recurse -File -ErrorAction SilentlyContinue).Count
                     $destCount = (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count
+                    $incomplete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
+                }
+            }
+            else {
+                # Fallback to file count comparison when no log available
+                if (-not (Test-Path $destPath)) {
+                    $missing += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath}
+                } else {
+                    try {
+                        $sourceCount = (Get-ChildItem $oneFolder.Source -Recurse -File -ErrorAction SilentlyContinue).Count
+                        $destCount = (Get-ChildItem $destPath -Recurse -File -ErrorAction SilentlyContinue).Count
 
-                    if ($sourceCount -gt $destCount) {
-                        $incomplete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
-                    } else {
-                        $complete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; Files = $destCount}
+                        if ($sourceCount -gt $destCount) {
+                            $incomplete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; SourceFiles = $sourceCount; BackupFiles = $destCount}
+                        } else {
+                            $complete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; Files = $destCount}
+                        }
+                    } catch {
+                        $incomplete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; SourceFiles = "Unknown"; BackupFiles = "Unknown"}
                     }
-                } catch {
-                    $incomplete += @{Type = "OneDrive"; Name = $oneFolder.Dest; Source = $oneFolder.Source; Dest = $destPath; SourceFiles = "Unknown"; BackupFiles = "Unknown"}
                 }
             }
         }
