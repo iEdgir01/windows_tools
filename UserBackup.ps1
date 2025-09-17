@@ -19,7 +19,7 @@ function Show-Header {
 
 # Function to get available users
 function Get-AvailableUsers {
-    # Method 1: Try WMI to get user profiles (more reliable for display names)
+    # Return user profiles as objects to preserve the correct names
     try {
         $wmiUsers = Get-WmiObject -Class Win32_UserProfile | Where-Object {
             $_.LocalPath -like "C:\Users\*" -and
@@ -28,24 +28,31 @@ function Get-AvailableUsers {
         }
 
         if ($wmiUsers) {
-            $users = @()
+            $userObjects = @()
             foreach ($profile in $wmiUsers) {
                 $userName = Split-Path $profile.LocalPath -Leaf
+                $displayName = $userName
+
                 # Get the SID and try to resolve to a friendly name
                 try {
                     $sid = New-Object System.Security.Principal.SecurityIdentifier($profile.SID)
                     $ntAccount = $sid.Translate([System.Security.Principal.NTAccount])
                     $friendlyName = $ntAccount.Value.Split('\')[-1]
                     if ($friendlyName -and $friendlyName -ne $userName) {
-                        $userName = $friendlyName
+                        $displayName = $friendlyName
                     }
                 } catch {
                     # If translation fails, use the folder name
                 }
-                $users += $userName
+
+                $userObjects += [PSCustomObject]@{
+                    FolderName = $userName
+                    DisplayName = $displayName
+                    LocalPath = $profile.LocalPath
+                }
             }
-            if ($users.Count -gt 0) {
-                return $users
+            if ($userObjects.Count -gt 0) {
+                return $userObjects
             }
         }
     } catch {
@@ -57,12 +64,16 @@ function Get-AvailableUsers {
         $_.Name -notin @("Public", "Default", "Default User", "All Users")
     }
 
-    $users = @()
+    $userObjects = @()
     foreach ($folder in $userFolders) {
-        $users += $folder.Name
+        $userObjects += [PSCustomObject]@{
+            FolderName = $folder.Name
+            DisplayName = $folder.Name
+            LocalPath = $folder.FullName
+        }
     }
 
-    return $users
+    return $userObjects
 }
 
 # Function to get available storage devices
@@ -194,27 +205,27 @@ Show-Header
 
 # Get username if not provided
 if (-not $Username) {
-    $users = Get-AvailableUsers
+    $userObjects = Get-AvailableUsers
 
-    if ($users.Count -eq 0) {
+    if ($userObjects.Count -eq 0) {
         Write-Host "No user profiles found!" -ForegroundColor Red
         exit 1
     }
 
     Write-Host "Available users:" -ForegroundColor Yellow
-    for ($i = 0; $i -lt $users.Count; $i++) {
+    for ($i = 0; $i -lt $userObjects.Count; $i++) {
         $userNum = $i + 1
-        # Simple string handling that works on all systems
-        $userName = "$($users[$i])"
-        Write-Host "  $userNum. $userName"
+        # Use the DisplayName directly from WMI - this preserves "INNERCITY"
+        Write-Host "  $userNum. $($userObjects[$i].DisplayName)"
     }
 
     do {
-        $selection = Read-Host "`nSelect user number (1-$($users.Count))"
+        $selection = Read-Host "`nSelect user number (1-$($userObjects.Count))"
         $userIndex = [int]$selection - 1
-    } while ($userIndex -lt 0 -or $userIndex -ge $users.Count)
+    } while ($userIndex -lt 0 -or $userIndex -ge $userObjects.Count)
 
-    $Username = $users[$userIndex]
+    $Username = $userObjects[$userIndex].FolderName
+    $selectedUser = $userObjects[$userIndex]
 }
 
 $userProfilePath = "C:\Users\$Username"
