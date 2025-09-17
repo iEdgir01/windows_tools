@@ -4,7 +4,8 @@
 param(
     [string]$Username,
     [string]$BackupLocation,
-    [string]$BackupFolder
+    [string]$BackupFolder,
+    [switch]$Debug
 )
 
 # Function to open debug console
@@ -41,10 +42,12 @@ while ($true) {
 # Function to write debug output
 function Write-Debug {
     param([string]$Message)
-    $timestamp = Get-Date -Format "HH:mm:ss"
-    try {
-        Add-Content -Path "$env:TEMP\backup_debug.log" -Value "[$timestamp] $Message" -ErrorAction SilentlyContinue
-    } catch {}
+    if ($Debug) {
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        try {
+            Add-Content -Path "$env:TEMP\backup_debug.log" -Value "[$timestamp] $Message" -ErrorAction SilentlyContinue
+        } catch {}
+    }
 }
 
 # Function to display header
@@ -205,9 +208,11 @@ function Start-UserBackup {
 }
 
 # Main script execution
-Start-DebugConsole
-Remove-Item "$env:TEMP\backup_debug.log" -ErrorAction SilentlyContinue
-Write-Debug "=== BACKUP SCRIPT STARTED ==="
+if ($Debug) {
+    Start-DebugConsole
+    Remove-Item "$env:TEMP\backup_debug.log" -ErrorAction SilentlyContinue
+    Write-Debug "=== BACKUP SCRIPT STARTED WITH DEBUG ==="
+}
 Show-Header
 
 # Get username if not provided

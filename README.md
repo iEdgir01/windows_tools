@@ -26,6 +26,20 @@ Or from PowerShell:
 iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windows_tools/main/UserBackup.ps1' | iex
 ```
 
+### Debug Mode
+
+To run with debug output in a separate console window:
+
+```cmd
+powershell -Command "(iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windows_tools/main/UserBackup.ps1').Content | powershell -Command '& { param($Debug=$true) ' + $input + ' }'"
+```
+
+Or simpler approach - download and run with debug:
+
+```powershell
+iwr -useb 'https://raw.githubusercontent.com/iEdgir01/windows_tools/main/UserBackup.ps1' -OutFile 'backup.ps1'; .\backup.ps1 -Debug; Remove-Item 'backup.ps1'
+```
+
 ## Local Execution
 
 ```powershell
@@ -38,6 +52,12 @@ You can skip prompts by providing parameters:
 
 ```powershell
 .\UserBackup.ps1 -Username "JohnDoe" -BackupLocation "E:" -BackupFolder "Backup_2024"
+```
+
+Enable debug mode:
+
+```powershell
+.\UserBackup.ps1 -Debug
 ```
 
 ## What Gets Backed Up
