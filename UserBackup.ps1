@@ -197,8 +197,11 @@ if (-not $BackupLocation) {
 
     for ($i = 0; $i -lt $devices.Count; $i++) {
         $device = $devices[$i]
-        Write-Host ("{0,2}. {1} | {2,-10} | {3,-9} | {4,-9} | {5}" -f
-            ($i + 1), $device.Drive, $device.Label, $device.Size, $device.Free, $device.Type)
+        $num = ($i + 1).ToString().PadLeft(2)
+        $label = $device.Label.PadRight(12)
+        $size = $device.Size.PadRight(9)
+        $free = $device.Free.PadRight(9)
+        Write-Host "$num. $($device.Drive) | $label | $size | $free | $($device.Type)"
     }
 
     do {
